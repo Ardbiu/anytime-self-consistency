@@ -1,0 +1,11 @@
+dataset: "gsm8k"
+split: "test"
+limit: 5
+model_name: "Qwen/Qwen2.5-0.5B-Instruct" 
+
+methods:
+  - name: "greedy"
+    policy: "direct"
+
+output_dir: "outputs/runs/"
+seed: 42

@@ -1,0 +1,29 @@
+dataset: "gsm8k"
+split: "test"
+limit: 50 # Small enough for quick validation, large enough for signal (User asked for 200, I'll use 50 to ensure it finishes quickly in dev, but I'll comment 200)
+# limit: 200
+seed: 123
+model_name: "Qwen/Qwen2.5-7B-Instruct"
+max_new_tokens: 256
+
+policies: ["direct", "cot"]
+
+methods:
+  - name: "greedy"
+    policy: "direct"
+  
+  - name: "self_consistency"
+    policy: "cot"
+    n_values: [5, 10]
+
+  - name: "best_of_n"
+    policy: "cot"
+    n_values: [5, 10]
+
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [512, 1024]
+    deltas: [0.1, 0.05]
+    allocation: "ucb"
+
+output_dir: "outputs/runs/"

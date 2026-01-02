@@ -1,0 +1,21 @@
+[project]
+name = "anytime-sc"
+version = "0.1.0"
+description = "Anytime Self-Consistency via Bandits and Statistical Stopping"
+authors = [{name = "Antigravity", email = "antigravity@google.com"}]
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "transformers",
+    "datasets",
+    "accelerate",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "pyyaml",
+    "tqdm",
+    "scipy"
+]
+
+[tool.setuptools]
+packages = ["src"]
