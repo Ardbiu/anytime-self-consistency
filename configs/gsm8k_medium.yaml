@@ -1,6 +1,6 @@
 dataset: "gsm8k"
 split: "test"
-limit: 50
+limit: 200 # Paper quality run
 seed: 123
 model_name: "Qwen/Qwen2.5-7B-Instruct"
 max_new_tokens: 256
@@ -13,16 +13,16 @@ methods:
   
   - name: "self_consistency"
     policy: "cot"
-    n_values: [5, 10]
+    n_values: [10, 20]
 
   - name: "best_of_n"
     policy: "cot"
-    n_values: [5, 10]
+    n_values: [10, 20]
 
   - name: "anytime_sc"
     policies: ["direct", "cot"]
-    budgets: [512, 1024]
-    deltas: [0.1, 0.05]
+    budgets: [1024, 2048]
+    deltas: [0.05, 0.01]
     allocation: "ucb"
 
 output_dir: "outputs/runs/"

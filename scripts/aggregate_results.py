@@ -69,6 +69,22 @@ def main():
 
     records = []
     
+    import numpy as np
+    
+    def bootstrap_ci(data, n_boot=1000, ci=95):
+        if len(data) < 2:
+            return np.nan, np.nan
+        boot_means = []
+        data_arr = np.array(data)
+        rng = np.random.default_rng(42)
+        for _ in range(n_boot):
+            sample = rng.choice(data_arr, size=len(data_arr), replace=True)
+            boot_means.append(np.mean(sample))
+        
+        lower = np.percentile(boot_means, (100 - ci) / 2)
+        upper = np.percentile(boot_means, 100 - (100 - ci) / 2)
+        return lower, upper
+
     for fpath in target_files:
         try:
             # We assume one config per file, but read all lines to be safe
@@ -80,8 +96,27 @@ def main():
         if len(df) == 0:
             continue
             
-        # Group by method configuration
+        # Group by method configuration (should be unique per file usually, but robust grouping is better)
+        # However, to do CIs, we need the raw arrays.
+        # Let's verify if the file contains mixed methods (unlikely with current runner).
+        # We'll treat the file as one "experiment group".
+        
         first = df.iloc[0]
+        
+        # Extract diversity metrics from 'extra'
+        # 'extra' is a dict column.
+        unique_fracs = []
+        if "extra" in df.columns:
+            for x in df["extra"]:
+                if isinstance(x, dict):
+                    uf = x.get("unique_candidate_frac")
+                    if uf is not None:
+                        unique_fracs.append(uf)
+        
+        mean_unique_frac = np.mean(unique_fracs) if unique_fracs else None
+        
+        acc_low, acc_high = bootstrap_ci(df["is_correct"].dropna().astype(float))
+        tokens_low, tokens_high = bootstrap_ci(df["total_tokens"].dropna())
         
         row = {
             "dataset": first.get("dataset"),
@@ -95,8 +130,15 @@ def main():
             "run_id": first.get("run_id", "unknown"),
             
             "accuracy": df["is_correct"].mean(),
+            "accuracy_ci_low": acc_low,
+            "accuracy_ci_high": acc_high,
+            
             "avg_tokens": df["total_tokens"].mean(),
+            "avg_tokens_ci_low": tokens_low,
+            "avg_tokens_ci_high": tokens_high,
+            
             "avg_time_s": df["time_s"].mean(),
+            "unique_candidate_frac": mean_unique_frac,
             "count": len(df)
         }
         
@@ -109,7 +151,12 @@ def main():
     summary_df = pd.DataFrame(records)
     
     # Sort for niceness
-    cols = ["dataset", "method", "model_name", "n", "budget", "delta", "allocation", "accuracy", "avg_tokens", "avg_time_s", "count", "run_id"]
+    cols = [
+        "dataset", "method", "model_name", "n", "budget", "delta", "allocation", 
+        "accuracy", "accuracy_ci_low", "accuracy_ci_high",
+        "avg_tokens", "avg_tokens_ci_low", "avg_tokens_ci_high",
+        "unique_candidate_frac", "avg_time_s", "count", "run_id"
+    ]
     # Filter to existing cols
     cols = [c for c in cols if c in summary_df.columns]
     summary_df = summary_df[cols]

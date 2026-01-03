@@ -114,9 +114,10 @@ def run_anytime_sc(
         
         res = model.generate(
             prompt,
-            temperature=policy.temperature,
-            top_p=policy.top_p,
-            do_sample=policy.do_sample,
+            temperature=getattr(policy, 'temperature', 0.7),
+            top_p=getattr(policy, 'top_p', 1.0),
+            top_k=getattr(policy, 'top_k', 50),
+            do_sample=True, # Anytime SC implies sampling
             seed=step_seed
         )
         
@@ -187,6 +188,11 @@ def run_anytime_sc(
     if final_pred is not None and example['gold'] is not None:
          is_correct = abs(final_pred - example['gold']) < 1e-6
          
+    # Calculate diversity
+    # t is total samples taken
+    # answer_counts keys are the unique answers found
+    unique_frac = len(answer_counts) / t if t > 0 else 0.0
+
     return {
         "example_id": example['id'],
         "method": "anytime_sc",
@@ -198,5 +204,8 @@ def run_anytime_sc(
         "total_tokens": total_tokens,
         "time_s": total_time,
         "steps": steps, # Detailed log
-        "extra": {}
+        "extra": {
+            "num_candidates": t,
+            "unique_candidate_frac": unique_frac
+        }
     }

@@ -49,8 +49,9 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
     for i in range(n):
         res = model.generate(
             prompt,
-            temperature=policy.temperature,
-            top_p=policy.top_p,
+            temperature=getattr(policy, 'temperature', 0.7),
+            top_p=getattr(policy, 'top_p', 1.0),
+            top_k=getattr(policy, 'top_k', 50),
             do_sample=True,
             seed=seed + i
         )
@@ -65,6 +66,10 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
     # Vote
     # Filter Nones if possible, but SC should count them maybe as "Error" class?
     valid_candidates = [c for c in candidates if c is not None]
+    
+    unique_candidates = set(valid_candidates)
+    num_unique = len(unique_candidates)
+    unique_frac = num_unique / len(candidates) if candidates else 0.0
     
     if not valid_candidates:
         top_ans = None
@@ -87,7 +92,11 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
         "completion_tokens": total_completion_tokens,
         "total_tokens": total_prompt_tokens + total_completion_tokens,
         "time_s": total_time,
-        "extra": {"candidates": candidates}
+        "extra": {
+            "candidates": candidates,
+            "unique_candidate_frac": unique_frac,
+            "num_candidates": len(candidates)
+        }
     }
 
 def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, seed: int = 42) -> dict:
@@ -97,6 +106,7 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
     best_score = -1.0
     best_res = None
     best_ans_val = None
+    candidates = []
     
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -105,8 +115,9 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
     for i in range(n):
         res = model.generate(
             prompt,
-            temperature=policy.temperature,
-            top_p=policy.top_p,
+            temperature=getattr(policy, 'temperature', 0.7),
+            top_p=getattr(policy, 'top_p', 1.0),
+            top_k=getattr(policy, 'top_k', 50),
             do_sample=True,
             seed=seed + i
         )
@@ -116,10 +127,16 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
         
         # Score
         sc = score_candidate(res['text'])
+        ans_val = normalize_numeric_answer(extract_final_answer(res['text']))
+        candidates.append(ans_val)
+
         if sc > best_score:
             best_score = sc
             best_res = res
-            best_ans_val = normalize_numeric_answer(extract_final_answer(res['text']))
+            best_ans_val = ans_val
+    
+    unique_candidates = set([c for c in candidates if c is not None])
+    unique_frac = len(unique_candidates) / len(candidates) if candidates else 0.0
     
     # Check correctness of chosen one
     is_correct = False
@@ -137,5 +154,9 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
         "completion_tokens": total_completion_tokens,
         "total_tokens": total_prompt_tokens + total_completion_tokens,
         "time_s": total_time,
-        "extra": {"best_score": best_score}
+        "extra": {
+            "best_score": best_score,
+            "unique_candidate_frac": unique_frac,
+            "num_candidates": len(candidates)
+        }
     }

@@ -1,11 +1,28 @@
 dataset: "gsm8k"
 split: "test"
-limit: 5
+limit: 10 # Tiny limit for smoke testing
+seed: 42
 model_name: "Qwen/Qwen2.5-0.5B-Instruct" 
+max_new_tokens: 256
+
+policies: ["direct", "cot"]
 
 methods:
   - name: "greedy"
     policy: "direct"
+  
+  - name: "self_consistency"
+    policy: "cot"
+    n_values: [3]
+
+  - name: "best_of_n"
+    policy: "cot"
+    n_values: [3]
+  
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [128]
+    deltas: [0.1]
+    allocation: "ucb"
 
 output_dir: "outputs/runs/"
-seed: 42

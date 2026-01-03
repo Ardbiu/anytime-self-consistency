@@ -39,7 +39,7 @@ class ModelRunner:
             logger.error(f"Error loading model: {e}")
             raise e
 
-    def generate(self, prompt: str, temperature: float = 0.7, top_p: float = 1.0, do_sample: bool = True, stop_tokens: list = None, seed: int = None) -> dict:
+    def generate(self, prompt: str, temperature: float = 0.7, top_p: float = 1.0, top_k: int = 50, do_sample: bool = True, stop_tokens: list = None, seed: int = None) -> dict:
         """
         Generates text and returns stats.
         """
@@ -53,14 +53,28 @@ class ModelRunner:
         
         start_time = time.time()
         
+        # Construct explicit generation args
+        gen_kwargs = {
+            "max_new_tokens": self.max_new_tokens,
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "do_sample": do_sample,
+        }
+        
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+            gen_kwargs["top_k"] = top_k
+        else:
+            # Greedy
+            gen_kwargs["num_return_sequences"] = 1
+            # Explicitly disable sampling params to avoid warnings
+            # gen_kwargs["temperature"] = None # Transformers might complain if passed None
+            pass
+        
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=temperature,
-                top_p=top_p,
-                do_sample=do_sample,
-                pad_token_id=self.tokenizer.eos_token_id,
+                **gen_kwargs
             )
             
         end_time = time.time()
