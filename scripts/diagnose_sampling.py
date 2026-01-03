@@ -38,46 +38,50 @@ def diagnose(files):
         print(f"File: {os.path.basename(f)}")
         print(f"Method: {method} (n={first.get('n')}, b={first.get('budget_tokens')})")
         
-        # Extract unique frac
+        # Extract unique frac with a consistent definition:
+        # unique_candidate_frac = (#unique final answers) / (num_candidates)
         unique_fracs = []
-        zero_diversity_examples = []
-        
+        all_same_examples = []
+
         for idx, row in df.iterrows():
             extra = row.get("extra", {})
-            if not isinstance(extra, dict): continue
-            
-            uf = extra.get("unique_candidate_frac")
-            if uf is not None:
-                unique_fracs.append(uf)
-                if uf <= (1.0 / row.get("n", 100)) + 0.01: 
-                    # If roughly 1/N, it usually means 1 unique candidate out of N => diversity 0.
-                    # Actually frac is unique/total. If 1 unique, frac is 1/N. 
-                    # But if N is large, 1/N is small.
-                    # Simpler check: num_candidates
-                    pass
-                
-                # Check for absolute zero diversity (only 1 unique answer)
-                # If unique_frac * num_candidates approx 1
-                try:
-                    candidates = extra.get("candidates", [])
-                    if not candidates and "steps" in row:
-                        # Anytime steps
-                        candidates = [s.get("answer") for s in row["steps"]]
-                    
-                    if candidates:
-                        unique_set = set(candidates)
-                        if len(unique_set) == 1 and len(candidates) > 1:
-                           zero_diversity_examples.append(row.get("example_id"))
-                except:
-                    pass
+            candidates = None
+
+            if isinstance(extra, dict):
+                candidates = extra.get("candidates")
+
+            if not candidates and "steps" in row and isinstance(row["steps"], list):
+                candidates = [s.get("raw_val", s.get("answer")) for s in row["steps"]]
+
+            unique_count = None
+            unique_frac = None
+
+            if candidates is not None:
+                num_candidates = len(candidates)
+                if num_candidates == 0:
+                    continue
+                unique_count = len(set(candidates))
+                unique_frac = unique_count / num_candidates
+            else:
+                if not isinstance(extra, dict):
+                    continue
+                unique_frac = extra.get("unique_candidate_frac")
+                num_candidates = extra.get("num_candidates")
+                if unique_frac is None or num_candidates in (None, 0):
+                    continue
+                unique_count = int(round(unique_frac * num_candidates))
+
+            unique_fracs.append(unique_frac)
+            if unique_count == 1:
+                all_same_examples.append(row.get("example_id"))
 
         if unique_fracs:
             mean_div = np.mean(unique_fracs)
             print(f"  Mean Unique Candidate Frac: {mean_div:.4f}")
-            print(f"  Min Diversity: {np.min(unique_fracs):.4f}")
-            print(f"  Zero Diversity Examples (All Same): {len(zero_diversity_examples)} / {len(df)}")
-            if zero_diversity_examples:
-                print(f"  Sample degenerate IDs: {zero_diversity_examples[:5]}")
+            print(f"  Min Unique Candidate Frac: {np.min(unique_fracs):.4f}")
+            print(f"  All Candidates Identical (Count): {len(all_same_examples)} / {len(df)}")
+            if all_same_examples:
+                print(f"  Sample degenerate IDs: {all_same_examples[:5]}")
             
             if mean_div < 0.1:
                 print("  [WARNING] Very low diversity! Sampling might be broken.")

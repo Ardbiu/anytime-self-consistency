@@ -1,6 +1,6 @@
 import torch
 import time
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 from .utils import setup_logging
 
 logger = setup_logging(__name__)
@@ -53,7 +53,7 @@ class ModelRunner:
         
         start_time = time.time()
         
-        # Construct explicit generation args
+        # Construct explicit generation args based on strict valid flags
         gen_kwargs = {
             "max_new_tokens": self.max_new_tokens,
             "pad_token_id": self.tokenizer.eos_token_id,
@@ -65,11 +65,36 @@ class ModelRunner:
             gen_kwargs["top_p"] = top_p
             gen_kwargs["top_k"] = top_k
         else:
-            # Greedy
+            # Greedy: strictly NO sampling params
             gen_kwargs["num_return_sequences"] = 1
-            # Explicitly disable sampling params to avoid warnings
-            # gen_kwargs["temperature"] = None # Transformers might complain if passed None
-            pass
+            # Ensure no temperature/top_p/top_k are passed
+            gen_config = getattr(self.model, "generation_config", None)
+            if gen_config is not None:
+                if hasattr(gen_config, "clone"):
+                    gen_config = gen_config.clone()
+                elif hasattr(gen_config, "copy"):
+                    gen_config = gen_config.copy()
+                else:
+                    gen_config = GenerationConfig.from_dict(gen_config.to_dict())
+
+                gen_config.do_sample = False
+                if hasattr(gen_config, "temperature"):
+                    gen_config.temperature = 1.0
+                if hasattr(gen_config, "top_p"):
+                    gen_config.top_p = 1.0
+                if hasattr(gen_config, "top_k"):
+                    gen_config.top_k = 50
+                if hasattr(gen_config, "typical_p"):
+                    gen_config.typical_p = 1.0
+                if hasattr(gen_config, "min_p"):
+                    gen_config.min_p = None
+                if hasattr(gen_config, "epsilon_cutoff"):
+                    gen_config.epsilon_cutoff = 0.0
+                if hasattr(gen_config, "eta_cutoff"):
+                    gen_config.eta_cutoff = 0.0
+                if hasattr(gen_config, "penalty_alpha"):
+                    gen_config.penalty_alpha = None
+                gen_kwargs["generation_config"] = gen_config
         
         with torch.no_grad():
             outputs = self.model.generate(

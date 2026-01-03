@@ -9,9 +9,8 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
     prompt = make_prompt(policy, example['question'])
     
     res = model.generate(
-        prompt, 
-        temperature=0.0, 
-        do_sample=False, 
+        prompt,
+        do_sample=False,
         seed=42
     )
     
