@@ -55,8 +55,10 @@ def run_eval(
 
     model = ModelRunner(
         model_name=config["model_name"],
-        dtype="float16" if "gpu" in str(config).lower() else "auto",
+        dtype=config.get("dtype", "auto"),
         max_new_tokens=config.get("max_new_tokens", 512),
+        use_flash_attention=config.get("use_flash_attention", False),
+        use_compile=config.get("use_compile", False),
     )
 
     timestamp = time.strftime("%Y%m%d-%H%M%S")

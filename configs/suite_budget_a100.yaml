@@ -1,0 +1,76 @@
+dataset: "gsm8k"
+split: "test"
+limit: null
+seed: 42
+
+# A100-optimized 7B model settings
+model_name: "Qwen/Qwen2.5-7B-Instruct"
+max_new_tokens: 256
+
+# A100 optimizations (40GB VRAM)
+use_flash_attention: true
+use_compile: false  # First run without compile (compile has warmup overhead)
+
+# Budget: ~1/8th of full paper scale
+datasets: ["gsm8k", "gsm_plus", "hendrycks_math"]
+dataset_limits:
+  gsm8k: 100
+  gsm_plus: 100
+  hendrycks_math: 100
+
+policies: ["direct", "cot"]
+
+methods:
+  - name: "greedy"
+    policy: "direct"
+
+  - name: "self_consistency"
+    policy: "cot"
+    n_values: [2, 10]
+    match_budgets: [512, 1024]
+    tokens_per_sample: 128
+    batched: true  # Use batched inference for speed
+
+  - name: "best_of_n"
+    policy: "cot"
+    n_values: [2, 10]
+    match_budgets: [512, 1024]
+    tokens_per_sample: 128
+    batched: true
+
+  - name: "self_consistency_early_stop"
+    policy: "cot"
+    n_values: [10]
+    stop_ratio: 0.6
+    min_samples: 3
+
+  - name: "best_of_n_early_stop"
+    policy: "cot"
+    n_values: [10]
+    score_threshold: 0.7
+    min_samples: 1
+
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [512, 1024]
+    deltas: [0.05]
+    allocation: "ucb"
+
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [512, 1024]
+    deltas: [0.05]
+    allocation: "uniform"
+
+  - name: "global_anytime_sc"
+    policy: "cot"
+    global_budget_tokens: [10000, 20000, 40000, 80000]
+    init_k: 1
+    allocation_policy: ["uniform", "uncertainty", "voi", "ucb", "per_example_budget"]
+    max_samples_per_item: 20
+    temperature: 0.7
+    top_p: 1.0
+    top_k: 50
+    ucb_c: 1.0
+
+output_dir: "outputs/runs/"

@@ -6,7 +6,16 @@ from .utils import setup_logging
 logger = setup_logging(__name__)
 
 class ModelRunner:
-    def __init__(self, model_name: str, device: str = None, dtype: str = "auto", max_new_tokens: int = 512, trust_remote_code: bool = False):
+    def __init__(
+        self,
+        model_name: str,
+        device: str = None,
+        dtype: str = "auto",
+        max_new_tokens: int = 512,
+        trust_remote_code: bool = False,
+        use_flash_attention: bool = False,
+        use_compile: bool = False,
+    ):
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
         
@@ -19,16 +28,47 @@ class ModelRunner:
             
         logger.info(f"Loading model {model_name} on {self.device}...")
         
+        # Determine optimal dtype for A100
+        if dtype == "auto" and self.device == "cuda":
+            # A100 has excellent bfloat16 support
+            if torch.cuda.is_bf16_supported():
+                dtype = "bfloat16"
+                logger.info("Using bfloat16 for A100 optimization")
+            else:
+                dtype = "float16"
+        
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype="auto" if dtype == "auto" else getattr(torch, dtype),
-                device_map="auto" if self.device != "cpu" else None, # MPS/CPU often handled better manually or with specific calls
-                trust_remote_code=trust_remote_code
-            )
+            
+            # Build model kwargs
+            model_kwargs = {
+                "torch_dtype": torch.bfloat16 if dtype == "bfloat16" else (
+                    torch.float16 if dtype == "float16" else "auto"
+                ),
+                "device_map": "auto" if self.device != "cpu" else None,
+                "trust_remote_code": trust_remote_code,
+            }
+            
+            # Enable Flash Attention 2 if requested and available
+            if use_flash_attention and self.device == "cuda":
+                try:
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                    logger.info("Enabled Flash Attention 2")
+                except Exception as e:
+                    logger.warning(f"Flash Attention 2 not available: {e}")
+            
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+            
             if self.device == "cpu" or self.device == "mps":
                 self.model.to(self.device)
+            
+            # Apply torch.compile for additional speedup (PyTorch 2.0+)
+            if use_compile and self.device == "cuda":
+                try:
+                    self.model = torch.compile(self.model, mode="reduce-overhead")
+                    logger.info("Applied torch.compile for optimization")
+                except Exception as e:
+                    logger.warning(f"torch.compile not available: {e}")
             
             # Ensure pad_token is set
             if self.tokenizer.pad_token is None:
