@@ -220,3 +220,24 @@ class ModelRunner:
         finally:
             # Restore original padding side
             self.tokenizer.padding_side = original_padding_side
+
+    def score_yes_no(self, prompt: str, yes_token: str = " yes", no_token: str = " no") -> float:
+        """
+        Returns P(yes) based on next-token logits for a yes/no verifier prompt.
+        Uses first token of each label if multi-token.
+        """
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            logits = outputs.logits[:, -1, :]
+        yes_ids = self.tokenizer(yes_token, add_special_tokens=False).input_ids
+        no_ids = self.tokenizer(no_token, add_special_tokens=False).input_ids
+        if not yes_ids or not no_ids:
+            return 0.5
+        yes_id = yes_ids[0]
+        no_id = no_ids[0]
+        probs = torch.softmax(logits, dim=-1)
+        p_yes = probs[0, yes_id].item()
+        p_no = probs[0, no_id].item()
+        denom = p_yes + p_no
+        return p_yes / denom if denom > 0 else 0.5

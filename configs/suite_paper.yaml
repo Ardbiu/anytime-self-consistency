@@ -29,6 +29,11 @@ methods:
     match_budgets: [512, 1024]
     tokens_per_sample: 128
 
+  - name: "best_of_n_verifier"
+    policy: "cot"
+    n_values: [2, 10]
+    verifier_model_name: "Qwen/Qwen2.5-1.5B-Instruct"
+
   - name: "self_consistency_early_stop"
     policy: "cot"
     n_values: [10]

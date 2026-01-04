@@ -102,9 +102,10 @@ make clean_keep_latest
 Each config `methods` entry must include `name` plus method-specific params:
 - `greedy`: optional `policy` or `prompt` (defaults to `direct`; falls back to raw question if unknown).
 - `self_consistency` / `best_of_n`: require `policy`/`prompt` plus either `n_values` or `match_budgets` + `tokens_per_sample` (for budget-matched fixed-N runs).
+- `best_of_n_verifier`: requires `policy`/`prompt`, `n_values`, and `verifier_model_name` (optional `verifier_max_new_tokens`).
 - `self_consistency_early_stop`: requires `policy`, `n_values`, and stopping params (`stop_ratio` or `stop_count`, plus `min_samples`).
 - `best_of_n_early_stop`: requires `policy`, `n_values`, and `score_threshold` (+ optional `min_samples`).
-- `anytime_sc`: require `policies`, `budgets`, `deltas` (and optional `allocation` like `ucb` or `uniform`).
+- `anytime_sc`: require `policies`, `budgets`, `deltas` (and optional `allocation` like `ucb` or `uniform`, plus `batch_size` and `allow_unseeded_batch` for batched sampling).
 - `global_anytime_sc`: dataset-level global budget. Requires `policy`, `global_budget_tokens`, `init_k`, `allocation_policy`, and optional `max_samples_per_item`, `per_example_budget_tokens`, `ucb_c`, `store_allocation_steps`, `temperature`, `top_p`, `top_k`, `finalize`.
 
 Output files are named as:
@@ -182,6 +183,6 @@ Batched inference is available in `run_self_consistency()` and `run_best_of_n()`
 
 ## Troubleshooting
 - **`ModuleNotFoundError: No module named 'src'`**: Make sure you run python from the root `anytime-sc/` directory (e.g., `python -m src.run_eval`).
-- **`CUDA out of memory`**: Decrease `limit` or `batch_size` (batching not currently implemented in this simple runner, so switch to a smaller `model_name` in config).
+- **`CUDA out of memory`**: Decrease `limit` or `max_new_tokens`; if you enable batched anytime sampling, reduce `batch_size`.
 - **`Pad token not set`**: The code attempts to fix this automatically. If it fails, try a different model family (e.g. GPT-2 doesn't have a pad token by default, Qwen does).
 - **No output files**: Check if `limit` was too small or if all examples failed parsing. Check console logs.

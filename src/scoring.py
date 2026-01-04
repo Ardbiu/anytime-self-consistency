@@ -184,3 +184,14 @@ def score_candidate(pred_text: str, gold_val: Optional[float] = None) -> float:
     # Let's just keep it simple.
     
     return score
+
+def build_verifier_prompt(question: str, candidate_text: str, final_answer: Optional[str]) -> str:
+    final_line = final_answer if final_answer is not None else "unknown"
+    return (
+        "You are a strict math verifier.\n"
+        "Answer with a single word: yes or no.\n\n"
+        f"Question: {question}\n"
+        f"Candidate solution: {candidate_text}\n"
+        f"Candidate final answer: {final_line}\n"
+        "Is the final answer correct?"
+    )

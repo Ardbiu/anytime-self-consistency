@@ -1,7 +1,7 @@
 import collections
 from .models import ModelRunner
 from .policies import Policy, make_prompt
-from .scoring import extract_final_answer, normalize_answer_for_candidates, correctness_from_target, compare_answer_values, score_candidate
+from .scoring import extract_final_answer, normalize_answer_for_candidates, correctness_from_target, compare_answer_values, score_candidate, build_verifier_prompt
 
 def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
     """Run single greedy sample (or near greedy)."""
@@ -216,6 +216,92 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
             "best_score": best_score,
             "unique_candidate_frac": unique_frac,
             "num_candidates": len(candidates)
+        }
+    }
+
+def run_best_of_n_verifier(
+    model: ModelRunner,
+    policy: Policy,
+    example: dict,
+    n: int,
+    verifier: ModelRunner,
+    seed: int = 42,
+    batched: bool = False
+) -> dict:
+    """Run Best-of-N using a learned verifier score (yes/no)."""
+    prompt = make_prompt(policy, example["question"])
+
+    candidates = []
+    candidate_texts = []
+    verifier_scores = []
+
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_time = 0.0
+
+    if batched and hasattr(model, "generate_batch"):
+        prompts = [prompt] * n
+        results = model.generate_batch(
+            prompts,
+            temperature=getattr(policy, "temperature", 0.7),
+            top_p=getattr(policy, "top_p", 1.0),
+            top_k=getattr(policy, "top_k", 50),
+            do_sample=True,
+            seeds=None,
+        )
+        for res in results:
+            total_prompt_tokens += res["prompt_tokens"]
+            total_completion_tokens += res["completion_tokens"]
+            total_time += res["time_s"]
+            candidate_texts.append(res["text"])
+    else:
+        for i in range(n):
+            res = model.generate(
+                prompt,
+                temperature=getattr(policy, "temperature", 0.7),
+                top_p=getattr(policy, "top_p", 1.0),
+                top_k=getattr(policy, "top_k", 50),
+                do_sample=True,
+                seed=seed + i
+            )
+            total_prompt_tokens += res["prompt_tokens"]
+            total_completion_tokens += res["completion_tokens"]
+            total_time += res["time_s"]
+            candidate_texts.append(res["text"])
+
+    for text in candidate_texts:
+        ans_str = extract_final_answer(text)
+        ans_val = normalize_answer_for_candidates(ans_str)
+        candidates.append(ans_val)
+        verifier_prompt = build_verifier_prompt(example["question"], text, ans_str)
+        score = verifier.score_yes_no(verifier_prompt)
+        verifier_scores.append(score)
+
+    best_idx = int(max(range(len(verifier_scores)), key=lambda i: verifier_scores[i]))
+    best_ans_val = candidates[best_idx]
+
+    unique_candidates = set([c for c in candidates if c is not None])
+    unique_frac = len(unique_candidates) / len(candidates) if candidates else 0.0
+
+    is_correct = False
+    if best_ans_val is not None:
+        is_correct = compare_answer_values(best_ans_val, example.get("target"))
+
+    return {
+        "example_id": example["id"],
+        "method": "best_of_n_verifier",
+        "policy": policy.name,
+        "n": n,
+        "pred": best_ans_val,
+        "is_correct": is_correct,
+        "prompt_tokens": total_prompt_tokens,
+        "completion_tokens": total_completion_tokens,
+        "total_tokens": total_prompt_tokens + total_completion_tokens,
+        "time_s": total_time,
+        "extra": {
+            "verifier_scores": verifier_scores,
+            "unique_candidate_frac": unique_frac,
+            "num_candidates": len(candidates),
         }
     }
 

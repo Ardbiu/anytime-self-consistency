@@ -12,6 +12,7 @@ from .baselines import (
     run_greedy,
     run_self_consistency,
     run_best_of_n,
+    run_best_of_n_verifier,
     run_self_consistency_early_stop,
     run_best_of_n_early_stop,
 )
@@ -68,6 +69,7 @@ def run_eval(
     for method_cfg in config["methods"]:
         m_name = method_cfg["name"]
         logger.info(f"Running Method: {m_name}")
+        verifier_model = None
 
         def resolve_single_policy_from_name(policy_name):
             if not policy_name:
@@ -144,6 +146,30 @@ def run_eval(
             if not single_policy:
                 raise ValueError("best_of_n requires a valid policy/prompt.")
             configs = build_fixed_n_configs(method_cfg, policy_name, single_policy, "best_of_n")
+        elif m_name == "best_of_n_verifier":
+            if "n_values" not in method_cfg:
+                raise ValueError("best_of_n_verifier requires n_values.")
+            policy_name, single_policy = resolve_single_policy()
+            if not single_policy:
+                raise ValueError("best_of_n_verifier requires a valid policy/prompt.")
+            verifier_model_name = method_cfg.get("verifier_model_name")
+            if not verifier_model_name:
+                raise ValueError("best_of_n_verifier requires verifier_model_name.")
+            verifier_max_new_tokens = int(method_cfg.get("verifier_max_new_tokens", 8))
+            verifier_model = ModelRunner(
+                model_name=verifier_model_name,
+                dtype="float16" if "gpu" in str(config).lower() else "auto",
+                max_new_tokens=verifier_max_new_tokens,
+            )
+            configs = [
+                {
+                    "n": n,
+                    "policy": single_policy,
+                    "policy_name": policy_name,
+                    "verifier_model_name": verifier_model_name,
+                }
+                for n in method_cfg["n_values"]
+            ]
         elif m_name == "self_consistency_early_stop":
             if "n_values" not in method_cfg:
                 raise ValueError("self_consistency_early_stop requires n_values.")
@@ -188,10 +214,19 @@ def run_eval(
             policies = resolve_policy_list()
             if not policies:
                 raise ValueError("anytime_sc requires policies.")
+            batch_size = int(method_cfg.get("batch_size", 1))
+            allow_unseeded_batch = bool(method_cfg.get("allow_unseeded_batch", False))
             configs = []
             for b in method_cfg["budgets"]:
                 for d in method_cfg["deltas"]:
-                     configs.append({"budget": b, "delta": d, "allocation": method_cfg.get("allocation", "ucb"), "policies": policies})
+                    configs.append({
+                        "budget": b,
+                        "delta": d,
+                        "allocation": method_cfg.get("allocation", "ucb"),
+                        "policies": policies,
+                        "batch_size": batch_size,
+                        "allow_unseeded_batch": allow_unseeded_batch,
+                    })
         elif m_name == "global_anytime_sc":
             policy_name, single_policy = resolve_single_policy()
             if policy_name is None:
@@ -252,11 +287,14 @@ def run_eval(
 
             if m_name == "greedy":
                 fname = f"{dataset_name}_{m_name}_{run_cfg['policy_name']}"
-            elif m_name in ["self_consistency", "best_of_n", "self_consistency_early_stop", "best_of_n_early_stop"]:
+            elif m_name in ["self_consistency", "best_of_n", "best_of_n_verifier", "self_consistency_early_stop", "best_of_n_early_stop"]:
                 fname = f"{dataset_name}_{m_name}_n{run_cfg['n']}"
                 if run_cfg.get("budget_tokens") is not None:
                     fname = f"{fname}_b{int(run_cfg['budget_tokens'])}"
                 fname = f"{fname}_{run_cfg['policy'].name}"
+                if m_name == "best_of_n_verifier":
+                    verifier_label = run_cfg["verifier_model_name"].split("/")[-1]
+                    fname = f"{fname}_verifier{verifier_label}"
             elif m_name == "anytime_sc":
                 fname = f"{dataset_name}_{m_name}_b{run_cfg['budget']}_d{run_cfg['delta']}_{run_cfg['allocation']}"
             elif m_name == "global_anytime_sc":
@@ -336,6 +374,14 @@ def run_eval(
                                 res = run_self_consistency(model, run_cfg["policy"], example, run_cfg["n"])
                             elif m_name == "best_of_n":
                                 res = run_best_of_n(model, run_cfg["policy"], example, run_cfg["n"])
+                            elif m_name == "best_of_n_verifier":
+                                res = run_best_of_n_verifier(
+                                    model,
+                                    run_cfg["policy"],
+                                    example,
+                                    run_cfg["n"],
+                                    verifier_model,
+                                )
                             elif m_name == "self_consistency_early_stop":
                                 res = run_self_consistency_early_stop(
                                     model,
@@ -356,8 +402,19 @@ def run_eval(
                                     min_samples=run_cfg["min_samples"],
                                 )
                             elif m_name == "anytime_sc":
-                                res = run_anytime_sc(model, run_cfg["policies"], example, run_cfg["budget"], run_cfg["delta"], run_cfg["allocation"])
-                            
+                                res = run_anytime_sc(
+                                    model,
+                                    run_cfg["policies"],
+                                    example,
+                                    run_cfg["budget"],
+                                    run_cfg["delta"],
+                                    run_cfg["allocation"],
+                                    batch_size=run_cfg["batch_size"],
+                                    allow_unseeded_batch=run_cfg["allow_unseeded_batch"],
+                                )
+                            else:
+                                raise ValueError(f"Unknown method name: {m_name}")
+
                             # Inject Metadata
                             res["dataset"] = dataset_name or "unknown"
                             res["split"] = split
@@ -370,11 +427,20 @@ def run_eval(
                                 res["budget_tokens"] = run_cfg["budget_tokens"]
                             if run_cfg.get("tokens_per_sample") is not None:
                                 res["tokens_per_sample"] = run_cfg["tokens_per_sample"]
-                            
+                            if run_cfg.get("verifier_model_name") is not None:
+                                res["verifier_model_name"] = run_cfg["verifier_model_name"]
+                            if run_cfg.get("batch_size") is not None:
+                                res["batch_size"] = run_cfg["batch_size"]
+                            if run_cfg.get("allow_unseeded_batch") is not None:
+                                res["allow_unseeded_batch"] = run_cfg["allow_unseeded_batch"]
+
                             # Ensure fields exist
-                            if "is_correct" not in res: res["is_correct"] = None
-                            if "target" not in res: res["target"] = example.get("target")
-                            if "parse_error" not in res: res["parse_error"] = example.get("parse_error", False)
+                            if "is_correct" not in res:
+                                res["is_correct"] = None
+                            if "target" not in res:
+                                res["target"] = example.get("target")
+                            if "parse_error" not in res:
+                                res["parse_error"] = example.get("parse_error", False)
                             if "subject" not in res and "subject" in example:
                                 res["subject"] = example.get("subject")
 

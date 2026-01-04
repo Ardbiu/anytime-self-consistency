@@ -138,6 +138,26 @@ def main():
                     lbl += f", b={int(row['budget'])}"
                 ax.annotate(lbl, (row[x_col], row[y_col]), xytext=(0, -10), textcoords='offset points', fontsize=8)
 
+        bon_ver = sub_df[sub_df["method"] == "best_of_n_verifier"].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        if not bon_ver.empty:
+            if "verifier_model_name" in bon_ver.columns:
+                for verifier_name, vdf in bon_ver.groupby("verifier_model_name", dropna=False):
+                    vdf = vdf.sort_values(x_col)
+                    short_name = None if pd.isna(verifier_name) else str(verifier_name).split("/")[-1]
+                    label = "BoN Verifier" if not short_name else f"BoN Verifier ({short_name})"
+                    xerr = error_arrays(vdf, x_col, x_low_col, x_high_col)
+                    yerr = error_arrays(vdf, y_col, y_low_col, y_high_col)
+                    ax.errorbar(vdf[x_col], vdf[y_col], xerr=xerr, yerr=yerr, label=label, marker="X", linestyle="-.")
+                    for _, row in vdf.iterrows():
+                        lbl = f"n={int(row['n'])}"
+                        if "budget" in row and not pd.isna(row["budget"]):
+                            lbl += f", b={int(row['budget'])}"
+                        ax.annotate(lbl, (row[x_col], row[y_col]), xytext=(0, -12), textcoords='offset points', fontsize=8)
+            else:
+                xerr = error_arrays(bon_ver, x_col, x_low_col, x_high_col)
+                yerr = error_arrays(bon_ver, y_col, y_low_col, y_high_col)
+                ax.errorbar(bon_ver[x_col], bon_ver[y_col], xerr=xerr, yerr=yerr, label="BoN Verifier", marker="X", linestyle="-.")
+
         bon_es = sub_df[sub_df["method"] == "best_of_n_early_stop"].dropna(subset=[x_col, y_col]).sort_values(x_col)
         if not bon_es.empty:
             xerr = error_arrays(bon_es, x_col, x_low_col, x_high_col)
