@@ -101,8 +101,10 @@ make clean_keep_latest
 ## Method schema and run labels
 Each config `methods` entry must include `name` plus method-specific params:
 - `greedy`: optional `policy` or `prompt` (defaults to `direct`; falls back to raw question if unknown).
-- `self_consistency` / `best_of_n`: require `policy`/`prompt` and `n_values`.
-- `anytime_sc`: require `policies`, `budgets`, `deltas` (and optional `allocation`).
+- `self_consistency` / `best_of_n`: require `policy`/`prompt` plus either `n_values` or `match_budgets` + `tokens_per_sample` (for budget-matched fixed-N runs).
+- `self_consistency_early_stop`: requires `policy`, `n_values`, and stopping params (`stop_ratio` or `stop_count`, plus `min_samples`).
+- `best_of_n_early_stop`: requires `policy`, `n_values`, and `score_threshold` (+ optional `min_samples`).
+- `anytime_sc`: require `policies`, `budgets`, `deltas` (and optional `allocation` like `ucb` or `uniform`).
 
 Output files are named as:
 `{dataset}_{method}_{params}_{run_group}_seed{seed}_{run_id}.jsonl` (run_group omitted if not provided).
@@ -135,6 +137,18 @@ python scripts/diagnose_sampling.py --latest_group
 - `outputs/summaries/summary_per_run.csv`: per-seed/run summary (matches one JSONL file).
 - `outputs/summaries/summary_grouped.csv`: aggregated over seeds with CIs.
 - `outputs/plots/pareto_grouped.png`: grouped plot with error bars.
+
+### Ablations and analysis helpers
+```bash
+# Ablation comparisons (allocation, fixed-N vs anytime, early-stop vs fixed-N)
+python scripts/ablation_table.py --latest_group
+
+# Significance testing (paired bootstrap)
+python scripts/significance_tests.py --latest_group --dataset gsm8k --method_a anytime_sc --method_b self_consistency --a_budget 1024 --a_delta 0.05 --a_allocation ucb --b_budget 1024
+
+# Error analysis breakdowns
+python scripts/error_analysis.py --latest_group
+```
 
 ## Troubleshooting
 - **`ModuleNotFoundError: No module named 'src'`**: Make sure you run python from the root `anytime-sc/` directory (e.g., `python -m src.run_eval`).

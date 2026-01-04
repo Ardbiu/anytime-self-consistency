@@ -114,6 +114,17 @@ def main():
             yerr = error_arrays(sc, y_col, y_low_col, y_high_col)
             ax.errorbar(sc[x_col], sc[y_col], xerr=xerr, yerr=yerr, label="Self-Consistency", marker="o", linestyle="-")
             for _, row in sc.iterrows():
+                lbl = f"n={int(row['n'])}"
+                if "budget" in row and not pd.isna(row["budget"]):
+                    lbl += f", b={int(row['budget'])}"
+                ax.annotate(lbl, (row[x_col], row[y_col]), xytext=(0, 5), textcoords='offset points', fontsize=8)
+
+        sc_es = sub_df[sub_df["method"] == "self_consistency_early_stop"].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        if not sc_es.empty:
+            xerr = error_arrays(sc_es, x_col, x_low_col, x_high_col)
+            yerr = error_arrays(sc_es, y_col, y_low_col, y_high_col)
+            ax.errorbar(sc_es[x_col], sc_es[y_col], xerr=xerr, yerr=yerr, label="SC Early-Stop", marker="D", linestyle=":")
+            for _, row in sc_es.iterrows():
                 ax.annotate(f"n={int(row['n'])}", (row[x_col], row[y_col]), xytext=(0, 5), textcoords='offset points', fontsize=8)
 
         bon = sub_df[sub_df["method"] == "best_of_n"].dropna(subset=[x_col, y_col]).sort_values(x_col)
@@ -122,6 +133,17 @@ def main():
             yerr = error_arrays(bon, y_col, y_low_col, y_high_col)
             ax.errorbar(bon[x_col], bon[y_col], xerr=xerr, yerr=yerr, label="Best-of-N", marker="s", linestyle="--")
             for _, row in bon.iterrows():
+                lbl = f"n={int(row['n'])}"
+                if "budget" in row and not pd.isna(row["budget"]):
+                    lbl += f", b={int(row['budget'])}"
+                ax.annotate(lbl, (row[x_col], row[y_col]), xytext=(0, -10), textcoords='offset points', fontsize=8)
+
+        bon_es = sub_df[sub_df["method"] == "best_of_n_early_stop"].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        if not bon_es.empty:
+            xerr = error_arrays(bon_es, x_col, x_low_col, x_high_col)
+            yerr = error_arrays(bon_es, y_col, y_low_col, y_high_col)
+            ax.errorbar(bon_es[x_col], bon_es[y_col], xerr=xerr, yerr=yerr, label="BoN Early-Stop", marker="P", linestyle=":")
+            for _, row in bon_es.iterrows():
                 ax.annotate(f"n={int(row['n'])}", (row[x_col], row[y_col]), xytext=(0, -10), textcoords='offset points', fontsize=8)
 
         anytime = sub_df[sub_df["method"] == "anytime_sc"].dropna(subset=[x_col, y_col])

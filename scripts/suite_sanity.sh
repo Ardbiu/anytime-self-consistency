@@ -5,13 +5,14 @@ echo "=== STARTING SUITE SANITY TEST ==="
 
 mkdir -p outputs/logs
 TMP_LOG_FILE="outputs/logs/suite_sanity_tmp.log"
+SANITY_SEEDS=${SANITY_SEEDS:-0,1,2}
 
 # Activate venv if exists
 if [ -f "venv/bin/activate" ]; then
     source venv/bin/activate
 fi
 
-python scripts/run_suite.py --config configs/suite_smoke.yaml --seeds 0,1 --datasets gsm8k,gsm_plus > "$TMP_LOG_FILE" 2>&1 || { cat "$TMP_LOG_FILE"; exit 1; }
+python scripts/run_suite.py --config configs/suite_smoke.yaml --seeds "$SANITY_SEEDS" --datasets gsm8k,gsm_plus > "$TMP_LOG_FILE" 2>&1 || { cat "$TMP_LOG_FILE"; exit 1; }
 
 RUN_GROUP=$(grep -m1 "Run group:" "$TMP_LOG_FILE" | sed -E 's/.*Run group: //')
 if [ -z "$RUN_GROUP" ]; then

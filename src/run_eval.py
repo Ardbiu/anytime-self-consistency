@@ -8,7 +8,13 @@ from .utils import setup_logging, set_seed, ensure_dir
 from .data import load_dataset_records
 from .models import ModelRunner
 from .policies import load_policies_from_config
-from .baselines import run_greedy, run_self_consistency, run_best_of_n
+from .baselines import (
+    run_greedy,
+    run_self_consistency,
+    run_best_of_n,
+    run_self_consistency_early_stop,
+    run_best_of_n_early_stop,
+)
 from .anytime import run_anytime_sc
 
 logger = setup_logging("run_eval")
@@ -89,6 +95,34 @@ def run_eval(
                 raise ValueError(f"One or more policies are unknown for method '{m_name}': {policy_names}")
             return policies
 
+        def build_fixed_n_configs(method_cfg, policy_name, single_policy, method_label):
+            configs = []
+            n_values = method_cfg.get("n_values", [])
+            if n_values:
+                configs.extend([
+                    {"n": n, "policy": single_policy, "policy_name": policy_name}
+                    for n in n_values
+                ])
+
+            match_budgets = method_cfg.get("match_budgets")
+            if match_budgets:
+                tokens_per_sample = method_cfg.get("tokens_per_sample")
+                if tokens_per_sample is None or float(tokens_per_sample) <= 0:
+                    raise ValueError(f"{method_label} match_budgets requires tokens_per_sample > 0.")
+                for b in match_budgets:
+                    n = max(1, int(round(float(b) / float(tokens_per_sample))))
+                    configs.append({
+                        "n": n,
+                        "policy": single_policy,
+                        "policy_name": policy_name,
+                        "budget_tokens": int(b),
+                        "tokens_per_sample": float(tokens_per_sample),
+                    })
+
+            if not configs:
+                raise ValueError(f"{method_label} requires n_values or match_budgets.")
+            return configs
+
         # Refactor execution loop
         if m_name == "greedy":
             policy_name, single_policy = resolve_single_policy()
@@ -100,19 +134,53 @@ def run_eval(
                     single_policy = None
             configs = [{"policy": single_policy, "policy_name": policy_name}]
         elif m_name == "self_consistency":
-            if "n_values" not in method_cfg:
-                raise ValueError("self_consistency requires n_values.")
             policy_name, single_policy = resolve_single_policy()
             if not single_policy:
                 raise ValueError("self_consistency requires a valid policy/prompt.")
-            configs = [{"n": n, "policy": single_policy, "policy_name": policy_name} for n in method_cfg["n_values"]]
+            configs = build_fixed_n_configs(method_cfg, policy_name, single_policy, "self_consistency")
         elif m_name == "best_of_n":
-             if "n_values" not in method_cfg:
-                 raise ValueError("best_of_n requires n_values.")
-             policy_name, single_policy = resolve_single_policy()
-             if not single_policy:
-                 raise ValueError("best_of_n requires a valid policy/prompt.")
-             configs = [{"n": n, "policy": single_policy, "policy_name": policy_name} for n in method_cfg["n_values"]]
+            policy_name, single_policy = resolve_single_policy()
+            if not single_policy:
+                raise ValueError("best_of_n requires a valid policy/prompt.")
+            configs = build_fixed_n_configs(method_cfg, policy_name, single_policy, "best_of_n")
+        elif m_name == "self_consistency_early_stop":
+            if "n_values" not in method_cfg:
+                raise ValueError("self_consistency_early_stop requires n_values.")
+            policy_name, single_policy = resolve_single_policy()
+            if not single_policy:
+                raise ValueError("self_consistency_early_stop requires a valid policy/prompt.")
+            stop_ratio = method_cfg.get("stop_ratio", 0.6)
+            stop_count = method_cfg.get("stop_count")
+            min_samples = method_cfg.get("min_samples", 2)
+            configs = [
+                {
+                    "n": n,
+                    "policy": single_policy,
+                    "policy_name": policy_name,
+                    "stop_ratio": stop_ratio,
+                    "stop_count": stop_count,
+                    "min_samples": min_samples,
+                }
+                for n in method_cfg["n_values"]
+            ]
+        elif m_name == "best_of_n_early_stop":
+            if "n_values" not in method_cfg:
+                raise ValueError("best_of_n_early_stop requires n_values.")
+            policy_name, single_policy = resolve_single_policy()
+            if not single_policy:
+                raise ValueError("best_of_n_early_stop requires a valid policy/prompt.")
+            score_threshold = method_cfg.get("score_threshold", 0.7)
+            min_samples = method_cfg.get("min_samples", 1)
+            configs = [
+                {
+                    "n": n,
+                    "policy": single_policy,
+                    "policy_name": policy_name,
+                    "score_threshold": score_threshold,
+                    "min_samples": min_samples,
+                }
+                for n in method_cfg["n_values"]
+            ]
         elif m_name == "anytime_sc":
             if "budgets" not in method_cfg or "deltas" not in method_cfg:
                 raise ValueError("anytime_sc requires budgets and deltas.")
@@ -137,8 +205,11 @@ def run_eval(
 
             if m_name == "greedy":
                 fname = f"{dataset_name}_{m_name}_{run_cfg['policy_name']}"
-            elif m_name in ["self_consistency", "best_of_n"]:
-                fname = f"{dataset_name}_{m_name}_n{run_cfg['n']}_{run_cfg['policy'].name}"
+            elif m_name in ["self_consistency", "best_of_n", "self_consistency_early_stop", "best_of_n_early_stop"]:
+                fname = f"{dataset_name}_{m_name}_n{run_cfg['n']}"
+                if run_cfg.get("budget_tokens") is not None:
+                    fname = f"{fname}_b{int(run_cfg['budget_tokens'])}"
+                fname = f"{fname}_{run_cfg['policy'].name}"
             elif m_name == "anytime_sc":
                 fname = f"{dataset_name}_{m_name}_b{run_cfg['budget']}_d{run_cfg['delta']}_{run_cfg['allocation']}"
 
@@ -161,6 +232,25 @@ def run_eval(
                             res = run_self_consistency(model, run_cfg["policy"], example, run_cfg["n"])
                         elif m_name == "best_of_n":
                             res = run_best_of_n(model, run_cfg["policy"], example, run_cfg["n"])
+                        elif m_name == "self_consistency_early_stop":
+                            res = run_self_consistency_early_stop(
+                                model,
+                                run_cfg["policy"],
+                                example,
+                                run_cfg["n"],
+                                stop_ratio=run_cfg["stop_ratio"],
+                                stop_count=run_cfg["stop_count"],
+                                min_samples=run_cfg["min_samples"],
+                            )
+                        elif m_name == "best_of_n_early_stop":
+                            res = run_best_of_n_early_stop(
+                                model,
+                                run_cfg["policy"],
+                                example,
+                                run_cfg["n"],
+                                score_threshold=run_cfg["score_threshold"],
+                                min_samples=run_cfg["min_samples"],
+                            )
                         elif m_name == "anytime_sc":
                             res = run_anytime_sc(model, run_cfg["policies"], example, run_cfg["budget"], run_cfg["delta"], run_cfg["allocation"])
                         
@@ -172,11 +262,17 @@ def run_eval(
                         res["run_group"] = run_group
                         res["seed"] = seed
                         res["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                        if run_cfg.get("budget_tokens") is not None:
+                            res["budget_tokens"] = run_cfg["budget_tokens"]
+                        if run_cfg.get("tokens_per_sample") is not None:
+                            res["tokens_per_sample"] = run_cfg["tokens_per_sample"]
                         
                         # Ensure fields exist
                         if "is_correct" not in res: res["is_correct"] = None
                         if "target" not in res: res["target"] = example.get("target")
                         if "parse_error" not in res: res["parse_error"] = example.get("parse_error", False)
+                        if "subject" not in res and "subject" in example:
+                            res["subject"] = example.get("subject")
 
                         f_out.write(json.dumps(res) + "\n")
                         f_out.flush() # Ensure safety

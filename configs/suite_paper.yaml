@@ -19,16 +19,38 @@ methods:
 
   - name: "self_consistency"
     policy: "cot"
-    n_values: [10]
+    n_values: [2, 10]
+    match_budgets: [512, 1024]
+    tokens_per_sample: 128
 
   - name: "best_of_n"
     policy: "cot"
+    n_values: [2, 10]
+    match_budgets: [512, 1024]
+    tokens_per_sample: 128
+
+  - name: "self_consistency_early_stop"
+    policy: "cot"
     n_values: [10]
+    stop_ratio: 0.6
+    min_samples: 3
+
+  - name: "best_of_n_early_stop"
+    policy: "cot"
+    n_values: [10]
+    score_threshold: 0.7
+    min_samples: 1
 
   - name: "anytime_sc"
     policies: ["direct", "cot"]
     budgets: [512, 1024]
     deltas: [0.05]
     allocation: "ucb"
+
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [512, 1024]
+    deltas: [0.05]
+    allocation: "uniform"
 
 output_dir: "outputs/runs/"

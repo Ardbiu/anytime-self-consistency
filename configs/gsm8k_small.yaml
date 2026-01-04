@@ -25,4 +25,10 @@ methods:
     deltas: [0.1, 0.05]
     allocation: "ucb"
 
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [512, 1024]
+    deltas: [0.1, 0.05]
+    allocation: "uniform"
+
 output_dir: "outputs/runs/"
