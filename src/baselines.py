@@ -5,8 +5,12 @@ from .scoring import extract_final_answer, normalize_answer_for_candidates, corr
 
 def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
     """Run single greedy sample (or near greedy)."""
-    # Force greedy params
-    prompt = make_prompt(policy, example['question'])
+    if policy is None:
+        prompt = example['question']
+        policy_name = "raw"
+    else:
+        prompt = make_prompt(policy, example['question'])
+        policy_name = policy.name
     
     res = model.generate(
         prompt,
@@ -22,7 +26,7 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
     return {
         "example_id": example['id'],
         "method": "greedy",
-        "policy": policy.name,
+        "policy": policy_name,
         "n": 1,
         "pred": final_ans, # Raw string extracted
         "pred_val": pred_val, # Numeric

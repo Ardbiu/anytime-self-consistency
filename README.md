@@ -98,6 +98,15 @@ To clean up old runs but keep the latest:
 make clean_keep_latest
 ```
 
+## Method schema and run labels
+Each config `methods` entry must include `name` plus method-specific params:
+- `greedy`: optional `policy` or `prompt` (defaults to `direct`; falls back to raw question if unknown).
+- `self_consistency` / `best_of_n`: require `policy`/`prompt` and `n_values`.
+- `anytime_sc`: require `policies`, `budgets`, `deltas` (and optional `allocation`).
+
+Output files are named as:
+`{dataset}_{method}_{params}_{run_group}_seed{seed}_{run_id}.jsonl` (run_group omitted if not provided).
+
 ## Suite runs (multi-dataset + multi-seed)
 
 ### Local sanity suite
