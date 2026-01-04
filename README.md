@@ -98,9 +98,37 @@ To clean up old runs but keep the latest:
 make clean_keep_latest
 ```
 
+## Suite runs (multi-dataset + multi-seed)
+
+### Local sanity suite
+```bash
+# Runs gsm8k + gsm_plus with 2 seeds and strict checks
+bash scripts/suite_sanity.sh
+```
+
+You can also run the suite directly:
+```bash
+python scripts/run_suite.py --config configs/suite_smoke.yaml --seeds 0,1 --datasets gsm8k,gsm_plus
+python scripts/aggregate_results.py --latest_group --bootstrap 200
+python scripts/plot_pareto.py --latest_group --grouped
+python scripts/diagnose_sampling.py --latest_group
+```
+
+### GCP / paper-scale suite
+```bash
+python scripts/run_suite.py --config configs/suite_paper.yaml --seeds 0,1,2,3,4 --datasets gsm8k,gsm_plus,hendrycks_math
+python scripts/aggregate_results.py --latest_group --bootstrap 1000
+python scripts/plot_pareto.py --latest_group --grouped
+python scripts/diagnose_sampling.py --latest_group
+```
+
+### Outputs to expect
+- `outputs/summaries/summary_per_run.csv`: per-seed/run summary (matches one JSONL file).
+- `outputs/summaries/summary_grouped.csv`: aggregated over seeds with CIs.
+- `outputs/plots/pareto_grouped.png`: grouped plot with error bars.
+
 ## Troubleshooting
 - **`ModuleNotFoundError: No module named 'src'`**: Make sure you run python from the root `anytime-sc/` directory (e.g., `python -m src.run_eval`).
 - **`CUDA out of memory`**: Decrease `limit` or `batch_size` (batching not currently implemented in this simple runner, so switch to a smaller `model_name` in config).
 - **`Pad token not set`**: The code attempts to fix this automatically. If it fails, try a different model family (e.g. GPT-2 doesn't have a pad token by default, Qwen does).
 - **No output files**: Check if `limit` was too small or if all examples failed parsing. Check console logs.
-

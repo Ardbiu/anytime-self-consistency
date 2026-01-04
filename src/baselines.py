@@ -1,7 +1,7 @@
 import collections
 from .models import ModelRunner
 from .policies import Policy, make_prompt
-from .scoring import extract_final_answer, normalize_numeric_answer, correctness_gsm8k, score_candidate
+from .scoring import extract_final_answer, normalize_answer_for_candidates, correctness_from_target, compare_answer_values, score_candidate
 
 def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
     """Run single greedy sample (or near greedy)."""
@@ -16,8 +16,8 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
     
     pred_text = res['text']
     final_ans = extract_final_answer(pred_text)
-    pred_val = normalize_numeric_answer(final_ans)
-    is_correct = correctness_gsm8k(pred_text, example['gold'])
+    pred_val = normalize_answer_for_candidates(final_ans)
+    is_correct = correctness_from_target(pred_text, example.get("target"))
     
     return {
         "example_id": example['id'],
@@ -59,7 +59,7 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
         total_time += res['time_s']
         
         ans_str = extract_final_answer(res['text'])
-        ans_val = normalize_numeric_answer(ans_str)
+        ans_val = normalize_answer_for_candidates(ans_str)
         candidates.append(ans_val)
         
     # Vote
@@ -77,8 +77,8 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
         top_ans, count = counter.most_common(1)[0]
     
     is_correct = False
-    if top_ans is not None and example['gold'] is not None:
-         is_correct = abs(top_ans - example['gold']) < 1e-6
+    if top_ans is not None:
+         is_correct = compare_answer_values(top_ans, example.get("target"))
 
     return {
         "example_id": example['id'],
@@ -126,7 +126,7 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
         
         # Score
         sc = score_candidate(res['text'])
-        ans_val = normalize_numeric_answer(extract_final_answer(res['text']))
+        ans_val = normalize_answer_for_candidates(extract_final_answer(res['text']))
         candidates.append(ans_val)
 
         if sc > best_score:
@@ -139,8 +139,8 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
     
     # Check correctness of chosen one
     is_correct = False
-    if best_ans_val is not None and example['gold'] is not None:
-         is_correct = abs(best_ans_val - example['gold']) < 1e-6
+    if best_ans_val is not None:
+         is_correct = compare_answer_values(best_ans_val, example.get("target"))
 
     return {
         "example_id": example['id'],

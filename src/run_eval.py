@@ -5,50 +5,54 @@ import os
 import time
 from tqdm import tqdm
 from .utils import setup_logging, set_seed, ensure_dir
-from .data import load_gsm8k
+from .data import load_dataset_records
 from .models import ModelRunner
-from .policies import Policy, load_policies_from_config
+from .policies import load_policies_from_config
 from .baselines import run_greedy, run_self_consistency, run_best_of_n
 from .anytime import run_anytime_sc
 
 logger = setup_logging("run_eval")
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True, help="Path to config yaml")
-    args = parser.parse_args()
-    
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
-        
-    # Setup
-    set_seed(config.get("seed", 42))
+def run_eval(
+    config: dict,
+    dataset_override: str = None,
+    limit_override: int = None,
+    seed_override: int = None,
+    run_group: str = None,
+) -> None:
+    dataset_name = dataset_override or config.get("dataset")
+    if not dataset_name:
+        logger.error("No dataset specified.")
+        return
+    split = config.get("split", "test")
+    seed = seed_override if seed_override is not None else config.get("seed", 42)
+    run_group = run_group or config.get("run_group")
+
+    set_seed(seed)
     ensure_dir(config["output_dir"])
-    
-    # Load Data
-    data = load_gsm8k(
-        split=config.get("split", "test"),
-        limit=config.get("limit", None),
-        seed=config.get("seed", 42)
+
+    data = load_dataset_records(
+        dataset_name,
+        split=split,
+        limit=limit_override if limit_override is not None else config.get("limit", None),
+        seed=seed,
     )
     if not data:
         return
-        
-    # Load Model
+
     model = ModelRunner(
         model_name=config["model_name"],
-        dtype="float16" if "gpu" in str(config).lower() else "auto" # simple heuristic
+        dtype="float16" if "gpu" in str(config).lower() else "auto",
+        max_new_tokens=config.get("max_new_tokens", 512),
     )
-    
-    # Base output filename
+
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     import uuid
     run_id = f"{timestamp}_{uuid.uuid4().hex[:6]}"
     logger.info(f"Global Run ID: {run_id}")
-    
-    # Iterate Methods
-    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # repo root
-    
+
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
     for method_cfg in config["methods"]:
         m_name = method_cfg["name"]
         logger.info(f"Running Method: {m_name}")
@@ -109,12 +113,24 @@ def main():
         
         for run_cfg in configs:
             # Construct filename
+            suffix_parts = []
+            if run_group:
+                suffix_parts.append(run_group)
+            if run_group or seed_override is not None:
+                suffix_parts.append(f"seed{seed}")
+            suffix = "_".join(suffix_parts)
+
             if m_name == "greedy":
-                fname = f"{config['dataset']}_{m_name}_{run_cfg['policy'].name}_{run_id}.jsonl"
+                fname = f"{dataset_name}_{m_name}_{run_cfg['policy'].name}"
             elif m_name in ["self_consistency", "best_of_n"]:
-                fname = f"{config['dataset']}_{m_name}_n{run_cfg['n']}_{run_cfg['policy'].name}_{run_id}.jsonl"
+                fname = f"{dataset_name}_{m_name}_n{run_cfg['n']}_{run_cfg['policy'].name}"
             elif m_name == "anytime_sc":
-                fname = f"{config['dataset']}_{m_name}_b{run_cfg['budget']}_d{run_cfg['delta']}_{run_cfg['allocation']}_{run_id}.jsonl"
+                fname = f"{dataset_name}_{m_name}_b{run_cfg['budget']}_d{run_cfg['delta']}_{run_cfg['allocation']}"
+
+            if suffix:
+                fname = f"{fname}_{suffix}_{run_id}.jsonl"
+            else:
+                fname = f"{fname}_{run_id}.jsonl"
             
             out_path = os.path.join(config["output_dir"], fname)
             logger.info(f"Starting run for {fname}...")
@@ -134,21 +150,44 @@ def main():
                             res = run_anytime_sc(model, run_cfg["policies"], example, run_cfg["budget"], run_cfg["delta"], run_cfg["allocation"])
                         
                         # Inject Metadata
-                        res["dataset"] = config.get("dataset", "unknown")
-                        res["split"] = config.get("split", "unknown")
+                        res["dataset"] = dataset_name or "unknown"
+                        res["split"] = split
                         res["model_name"] = config.get("model_name", "unknown")
                         res["run_id"] = run_id
+                        res["run_group"] = run_group
+                        res["seed"] = seed
                         res["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
                         
                         # Ensure fields exist
                         if "is_correct" not in res: res["is_correct"] = None
-                        if "gold" not in res: res["gold"] = example.get("gold")
+                        if "target" not in res: res["target"] = example.get("target")
+                        if "parse_error" not in res: res["parse_error"] = example.get("parse_error", False)
 
                         f_out.write(json.dumps(res) + "\n")
                         f_out.flush() # Ensure safety
                     except Exception as e:
                         logger.error(f"Error processing example {example.get('id')}: {e}")
                         continue
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, required=True, help="Path to config yaml")
+    parser.add_argument("--seed", type=int, help="Override seed for sampling/shuffle")
+    parser.add_argument("--run_group", type=str, help="Run group identifier for multi-seed suites")
+    parser.add_argument("--dataset", type=str, help="Override dataset name")
+    parser.add_argument("--limit", type=int, help="Override dataset limit")
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+
+    run_eval(
+        config=config,
+        dataset_override=args.dataset,
+        limit_override=args.limit,
+        seed_override=args.seed,
+        run_group=args.run_group,
+    )
 
 if __name__ == "__main__":
     main()

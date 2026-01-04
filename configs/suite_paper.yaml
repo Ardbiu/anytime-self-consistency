@@ -1,0 +1,34 @@
+dataset: "gsm8k"
+split: "test"
+limit: null
+seed: 42
+model_name: "Qwen/Qwen2.5-7B-Instruct"
+max_new_tokens: 256
+
+datasets: ["gsm8k", "gsm_plus", "hendrycks_math"]
+dataset_limits:
+  gsm8k: 500
+  gsm_plus: 500
+  hendrycks_math: 500
+
+policies: ["direct", "cot"]
+
+methods:
+  - name: "greedy"
+    policy: "direct"
+
+  - name: "self_consistency"
+    policy: "cot"
+    n_values: [10]
+
+  - name: "best_of_n"
+    policy: "cot"
+    n_values: [10]
+
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [512, 1024]
+    deltas: [0.05]
+    allocation: "ucb"
+
+output_dir: "outputs/runs/"

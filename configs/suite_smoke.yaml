@@ -1,0 +1,30 @@
+dataset: "gsm8k"
+split: "test"
+limit: 10
+seed: 42
+model_name: "Qwen/Qwen2.5-0.5B-Instruct"
+max_new_tokens: 64
+
+datasets: ["gsm8k", "gsm_plus"]
+
+policies: ["direct", "cot"]
+
+methods:
+  - name: "greedy"
+    policy: "direct"
+
+  - name: "self_consistency"
+    policy: "cot"
+    n_values: [3]
+
+  - name: "best_of_n"
+    policy: "cot"
+    n_values: [3]
+
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [128]
+    deltas: [0.1]
+    allocation: "ucb"
+
+output_dir: "outputs/runs/"

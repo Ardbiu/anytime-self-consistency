@@ -3,7 +3,7 @@ import collections
 import numpy as np
 from .models import ModelRunner
 from .policies import Policy, make_prompt
-from .scoring import extract_final_answer, normalize_numeric_answer
+from .scoring import extract_final_answer, normalize_answer_for_candidates, compare_answer_values
 
 def run_anytime_sc(
     model: ModelRunner, 
@@ -125,10 +125,10 @@ def run_anytime_sc(
         total_time += res['time_s']
         
         ans_str = extract_final_answer(res['text'])
-        ans_val = normalize_numeric_answer(ans_str)
+        ans_val = normalize_answer_for_candidates(ans_str)
         
         # Update Stats
-        ans_key = str(ans_val) # utilize string as key
+        ans_key = str(ans_val)
         if ans_val is not None:
              answer_counts[ans_key] += 1
              answer_to_val[ans_key] = ans_val
@@ -185,8 +185,8 @@ def run_anytime_sc(
         final_pred = answer_to_val.get(max(answer_counts, key=answer_counts.get))
         
     is_correct = False
-    if final_pred is not None and example['gold'] is not None:
-         is_correct = abs(final_pred - example['gold']) < 1e-6
+    if final_pred is not None:
+         is_correct = compare_answer_values(final_pred, example.get("target"))
          
     # Calculate diversity
     # t is total samples taken

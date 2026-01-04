@@ -17,6 +17,28 @@ def get_latest_run_id(files):
     if not run_ids: return None
     return sorted(list(run_ids))[-1]
 
+def read_first_record(path):
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    return json.loads(line)
+    except Exception:
+        return {}
+    return {}
+
+def get_latest_run_group(files):
+    run_groups = set()
+    for f in files:
+        rec = read_first_record(f)
+        rg = rec.get("run_group")
+        if rg:
+            run_groups.add(rg)
+    if not run_groups:
+        return None
+    return sorted(run_groups)[-1]
+
 def diagnose(files):
     all_methods = []
     
@@ -95,10 +117,28 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default="outputs/runs")
     parser.add_argument("--latest", action="store_true")
+    parser.add_argument("--run_id", type=str)
+    parser.add_argument("--run_group", type=str)
+    parser.add_argument("--latest_group", action="store_true")
     args = parser.parse_args()
     
     files = glob.glob(os.path.join(args.dir, "*.jsonl"))
     
+    if args.latest_group:
+        rg = get_latest_run_group(files)
+        if rg:
+            files = [f for f in files if read_first_record(f).get("run_group") == rg]
+            print(f"Filtering to latest run_group: {rg}")
+        else:
+            print("No run_group found.")
+            return
+    if args.run_group:
+        files = [f for f in files if read_first_record(f).get("run_group") == args.run_group]
+        print(f"Filtering to run_group: {args.run_group}")
+    if args.run_id:
+        files = [f for f in files if args.run_id in f]
+        print(f"Filtering to run_id: {args.run_id}")
+
     if args.latest:
         lid = get_latest_run_id(files)
         if lid:

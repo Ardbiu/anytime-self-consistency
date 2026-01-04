@@ -3,103 +3,156 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import os
 import sys
+import numpy as np
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=str, required=True, help="Input summary CSV file")
-    parser.add_argument("--output", type=str, required=True, help="Output plot PNG file")
+    parser.add_argument("--input", type=str, help="Input summary CSV file")
+    parser.add_argument("--output", type=str, help="Output plot PNG file")
     parser.add_argument("--run_id", type=str, help="Specific run_id to plot")
     parser.add_argument("--latest", action="store_true", help="Plot only the latest run_id found in summary")
+    parser.add_argument("--run_group", type=str, help="Specific run_group to plot")
+    parser.add_argument("--latest_group", action="store_true", help="Plot only the latest run_group found in summary")
+    parser.add_argument("--grouped", action="store_true", help="Plot grouped summary with CIs")
     args = parser.parse_args()
-    
-    if not os.path.exists(args.input):
-        print(f"Error: Input file {args.input} does not exist.")
+
+    default_grouped = "outputs/summaries/summary_grouped.csv"
+    default_per_run = "outputs/summaries/summary_per_run.csv"
+    if args.input:
+        input_path = args.input
+    else:
+        if args.grouped and os.path.exists(default_grouped):
+            input_path = default_grouped
+        elif os.path.exists(default_grouped):
+            input_path = default_grouped
+            args.grouped = True
+        else:
+            input_path = default_per_run
+
+    if not os.path.exists(input_path):
+        print(f"Error: Input file {input_path} does not exist.")
         sys.exit(1)
-        
-    df = pd.read_csv(args.input)
+
+    df = pd.read_csv(input_path)
     if df.empty:
         print("Error: Empty summary CSV.")
         sys.exit(1)
-        
-    # Filtering
-    if args.latest:
+
+    if args.grouped and "run_group" not in df.columns:
+        args.grouped = False
+
+    if args.latest_group:
+        if "run_group" not in df.columns:
+            print("Warning: 'run_group' column not found in summary. Cannot filter by latest group.")
+        else:
+            latest_group = df["run_group"].astype(str).max()
+            print(f"Filtering to latest run_group: {latest_group}")
+            df = df[df["run_group"] == latest_group]
+    elif args.run_group:
+        if "run_group" not in df.columns:
+            print("Warning: 'run_group' column not found in summary.")
+        else:
+            print(f"Filtering to run_group: {args.run_group}")
+            df = df[df["run_group"] == args.run_group]
+    elif args.latest:
         if "run_id" not in df.columns:
             print("Warning: 'run_id' column not found in summary. Cannot filter by latest.")
         else:
-            # find latest string.
-            # Assuming timestamps format YYYYMMDD... works lexicographically
             latest_id = df["run_id"].astype(str).max()
             print(f"Filtering to latest run_id: {latest_id}")
             df = df[df["run_id"] == latest_id]
-            
     elif args.run_id:
         if "run_id" not in df.columns:
-             print("Warning: 'run_id' column not found in summary.")
+            print("Warning: 'run_id' column not found in summary.")
         else:
             print(f"Filtering to run_id: {args.run_id}")
             df = df[df["run_id"] == args.run_id]
-    
+
     if df.empty:
         print("Error: No data left after filtering.")
         sys.exit(1)
-        
-    # Check if multiple runs still exist (if user didn't filter)
-    if "run_id" in df.columns:
-        unique_runs = df["run_id"].unique()
-        if len(unique_runs) > 1:
-            print(f"Warning: Plotting data from {len(unique_runs)} different run_ids. Use --latest or --run_id to filter.")
-    
-    plt.figure(figsize=(10, 6))
-    
-    # 1. Greedy
-    greedy = df[df["method"] == "greedy"]
-    if not greedy.empty:
-        plt.scatter(greedy["avg_tokens"], greedy["accuracy"], label="Greedy", marker="x", s=100, color="black", zorder=5)
-        
-    # 2. SC
-    sc = df[df["method"] == "self_consistency"].sort_values("avg_tokens")
-    if not sc.empty:
-        # Check if we have multiple N values per n (mixed runs)?
-        # If filtered correctly, we should be fine.
-        plt.plot(sc["avg_tokens"], sc["accuracy"], marker="o", linestyle="-", label="Self-Consistency")
-        for _, row in sc.iterrows():
-            plt.annotate(f"n={int(row['n'])}", (row['avg_tokens'], row['accuracy']), xytext=(0, 5), textcoords='offset points', fontsize=8)
-        
-    # 3. Best of N
-    bon = df[df["method"] == "best_of_n"].sort_values("avg_tokens")
-    if not bon.empty:
-        plt.plot(bon["avg_tokens"], bon["accuracy"], marker="s", linestyle="--", label="Best-of-N")
-        for _, row in bon.iterrows():
-            plt.annotate(f"n={int(row['n'])}", (row['avg_tokens'], row['accuracy']), xytext=(0, -10), textcoords='offset points', fontsize=8)
-        
-    # 4. Anytime
-    anytime = df[df["method"] == "anytime_sc"]
-    if not anytime.empty:
-        # Group by allocation if present
-        if "allocation" in anytime.columns:
-            allocs = anytime["allocation"].unique()
-            for alloc in allocs:
-                if pd.isna(alloc): continue
-                sub = anytime[anytime["allocation"] == alloc].sort_values("avg_tokens")
-                label_txt = f"Anytime ({alloc})"
-                plt.plot(sub["avg_tokens"], sub["accuracy"], marker="^", label=label_txt)
-                for _, row in sub.iterrows():
-                    # Annotate budget/delta
-                    lbl = f"b={int(row['budget'])}"
-                    if "delta" in row and not pd.isna(row['delta']):
-                        lbl += f", d={row['delta']}"
-                    plt.annotate(lbl, (row['avg_tokens'], row['accuracy']), xytext=(5, 0), textcoords='offset points', fontsize=7, alpha=0.7)
-        else:
-             sub = anytime.sort_values("avg_tokens")
-             plt.plot(sub["avg_tokens"], sub["accuracy"], marker="^", label="Anytime SC")
 
-    plt.xlabel("Average Total Tokens per Example")
-    plt.ylabel("Accuracy")
-    plt.title("Accuracy vs Compute (Pareto Frontier)")
-    plt.grid(True, alpha=0.3)
-    plt.legend()
-    
+    if not args.output:
+        if args.grouped:
+            args.output = "outputs/plots/pareto_grouped.png"
+        else:
+            args.output = "outputs/plots/pareto.png"
+
+    x_col = "mean_avg_tokens" if args.grouped else "avg_tokens"
+    y_col = "mean_accuracy" if args.grouped else "accuracy"
+    x_low_col = "tokens_ci_low" if args.grouped else "avg_tokens_ci_low"
+    x_high_col = "tokens_ci_high" if args.grouped else "avg_tokens_ci_high"
+    y_low_col = "accuracy_ci_low"
+    y_high_col = "accuracy_ci_high"
+
+    datasets = df["dataset"].dropna().unique().tolist() if "dataset" in df.columns else ["all"]
+    fig, axes = plt.subplots(len(datasets), 1, figsize=(10, 6 * len(datasets)), squeeze=False)
+
+    def error_arrays(sub_df, col, low_col, high_col):
+        lows = sub_df[low_col] if low_col in sub_df.columns else pd.Series([np.nan] * len(sub_df))
+        highs = sub_df[high_col] if high_col in sub_df.columns else pd.Series([np.nan] * len(sub_df))
+        vals = sub_df[col]
+        lower = vals - lows
+        upper = highs - vals
+        lower = lower.where(np.isfinite(lower), 0.0).to_numpy()
+        upper = upper.where(np.isfinite(upper), 0.0).to_numpy()
+        return [lower, upper]
+
+    for idx, dataset in enumerate(datasets):
+        ax = axes[idx][0]
+        sub_df = df if dataset == "all" else df[df["dataset"] == dataset]
+
+        greedy = sub_df[sub_df["method"] == "greedy"].dropna(subset=[x_col, y_col])
+        if not greedy.empty:
+            xerr = error_arrays(greedy, x_col, x_low_col, x_high_col)
+            yerr = error_arrays(greedy, y_col, y_low_col, y_high_col)
+            ax.errorbar(greedy[x_col], greedy[y_col], xerr=xerr, yerr=yerr, label="Greedy", marker="x", linestyle="None", color="black", zorder=5)
+
+        sc = sub_df[sub_df["method"] == "self_consistency"].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        if not sc.empty:
+            xerr = error_arrays(sc, x_col, x_low_col, x_high_col)
+            yerr = error_arrays(sc, y_col, y_low_col, y_high_col)
+            ax.errorbar(sc[x_col], sc[y_col], xerr=xerr, yerr=yerr, label="Self-Consistency", marker="o", linestyle="-")
+            for _, row in sc.iterrows():
+                ax.annotate(f"n={int(row['n'])}", (row[x_col], row[y_col]), xytext=(0, 5), textcoords='offset points', fontsize=8)
+
+        bon = sub_df[sub_df["method"] == "best_of_n"].dropna(subset=[x_col, y_col]).sort_values(x_col)
+        if not bon.empty:
+            xerr = error_arrays(bon, x_col, x_low_col, x_high_col)
+            yerr = error_arrays(bon, y_col, y_low_col, y_high_col)
+            ax.errorbar(bon[x_col], bon[y_col], xerr=xerr, yerr=yerr, label="Best-of-N", marker="s", linestyle="--")
+            for _, row in bon.iterrows():
+                ax.annotate(f"n={int(row['n'])}", (row[x_col], row[y_col]), xytext=(0, -10), textcoords='offset points', fontsize=8)
+
+        anytime = sub_df[sub_df["method"] == "anytime_sc"].dropna(subset=[x_col, y_col])
+        if not anytime.empty:
+            if "allocation" in anytime.columns:
+                allocs = anytime["allocation"].dropna().unique()
+                for alloc in allocs:
+                    alloc_df = anytime[anytime["allocation"] == alloc].sort_values(x_col)
+                    xerr = error_arrays(alloc_df, x_col, x_low_col, x_high_col)
+                    yerr = error_arrays(alloc_df, y_col, y_low_col, y_high_col)
+                    label_txt = f"Anytime ({alloc})"
+                    ax.errorbar(alloc_df[x_col], alloc_df[y_col], xerr=xerr, yerr=yerr, marker="^", linestyle="-", label=label_txt)
+                    for _, row in alloc_df.iterrows():
+                        lbl = f"b={int(row['budget'])}"
+                        if "delta" in row and not pd.isna(row["delta"]):
+                            lbl += f", d={row['delta']}"
+                        ax.annotate(lbl, (row[x_col], row[y_col]), xytext=(5, 0), textcoords='offset points', fontsize=7, alpha=0.7)
+            else:
+                xerr = error_arrays(anytime, x_col, x_low_col, x_high_col)
+                yerr = error_arrays(anytime, y_col, y_low_col, y_high_col)
+                ax.errorbar(anytime[x_col], anytime[y_col], xerr=xerr, yerr=yerr, marker="^", linestyle="-", label="Anytime SC")
+
+        title_suffix = f" ({dataset})" if dataset != "all" else ""
+        ax.set_title(f"Accuracy vs Compute{title_suffix}")
+        ax.set_xlabel("Average Total Tokens per Example")
+        ax.set_ylabel("Accuracy")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    plt.tight_layout()
     plt.savefig(args.output, dpi=150)
     print(f"Saved plot to {args.output}")
 
