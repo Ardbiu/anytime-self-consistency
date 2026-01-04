@@ -166,6 +166,20 @@ python scripts/plot_global_curve.py --latest_group
 python scripts/error_analysis.py --latest_group
 ```
 
+### Theoretical sanity checks
+Validate that the statistical stopping rule honors the delta (risk) parameter:
+```bash
+python scripts/analyze_stopping_bounds.py --latest_group
+```
+This compares empirical error rates against Hoeffding bounds and outputs a pass/fail summary.
+
+### Latency benchmarks
+Compare serial vs batched inference to demonstrate wall-clock savings:
+```bash
+python scripts/benchmark_latency.py --model Qwen/Qwen2.5-7B-Instruct --n 10
+```
+Batched inference is available in `run_self_consistency()` and `run_best_of_n()` via the `batched=True` parameter.
+
 ## Troubleshooting
 - **`ModuleNotFoundError: No module named 'src'`**: Make sure you run python from the root `anytime-sc/` directory (e.g., `python -m src.run_eval`).
 - **`CUDA out of memory`**: Decrease `limit` or `batch_size` (batching not currently implemented in this simple runner, so switch to a smaller `model_name` in config).

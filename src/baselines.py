@@ -38,8 +38,13 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
         "extra": {"full_text": pred_text}
     }
 
-def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: int, seed: int = 42) -> dict:
-    """Run Self-Consistency with Majority Vote."""
+def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: int, seed: int = 42, batched: bool = False) -> dict:
+    """Run Self-Consistency with Majority Vote.
+    
+    Args:
+        batched: If True, use batched inference for faster generation.
+                 Note: batched mode may not be exactly reproducible with seeds.
+    """
     prompt = make_prompt(policy, example['question'])
     
     candidates = []
@@ -47,24 +52,43 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
     total_completion_tokens = 0
     total_time = 0.0
     
-    # Generate N times
-    # Note: In production, batching is better. Here we iterate for simplicity/memory safety on smaller devices.
-    for i in range(n):
-        res = model.generate(
-            prompt,
+    if batched and hasattr(model, 'generate_batch'):
+        # Batched generation for throughput
+        prompts = [prompt] * n
+        results = model.generate_batch(
+            prompts,
             temperature=getattr(policy, 'temperature', 0.7),
             top_p=getattr(policy, 'top_p', 1.0),
             top_k=getattr(policy, 'top_k', 50),
             do_sample=True,
-            seed=seed + i
+            seeds=None,  # No seeds for true batching
         )
-        total_prompt_tokens += res['prompt_tokens']
-        total_completion_tokens += res['completion_tokens']
-        total_time += res['time_s']
-        
-        ans_str = extract_final_answer(res['text'])
-        ans_val = normalize_answer_for_candidates(ans_str)
-        candidates.append(ans_val)
+        for res in results:
+            total_prompt_tokens += res['prompt_tokens']
+            total_completion_tokens += res['completion_tokens']
+            total_time += res['time_s']
+            
+            ans_str = extract_final_answer(res['text'])
+            ans_val = normalize_answer_for_candidates(ans_str)
+            candidates.append(ans_val)
+    else:
+        # Serial generation (original behavior)
+        for i in range(n):
+            res = model.generate(
+                prompt,
+                temperature=getattr(policy, 'temperature', 0.7),
+                top_p=getattr(policy, 'top_p', 1.0),
+                top_k=getattr(policy, 'top_k', 50),
+                do_sample=True,
+                seed=seed + i
+            )
+            total_prompt_tokens += res['prompt_tokens']
+            total_completion_tokens += res['completion_tokens']
+            total_time += res['time_s']
+            
+            ans_str = extract_final_answer(res['text'])
+            ans_val = normalize_answer_for_candidates(ans_str)
+            candidates.append(ans_val)
         
     # Vote
     # Filter Nones if possible, but SC should count them maybe as "Error" class?
@@ -102,41 +126,72 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
         }
     }
 
-def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, seed: int = 42) -> dict:
-    """Run Best-of-N using a heuristic scorer."""
+def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, seed: int = 42, batched: bool = False) -> dict:
+    """Run Best-of-N using a heuristic scorer.
+    
+    Args:
+        batched: If True, use batched inference for faster generation.
+    """
     prompt = make_prompt(policy, example['question'])
     
     best_score = -1.0
     best_res = None
     best_ans_val = None
     candidates = []
+    all_texts = []
     
     total_prompt_tokens = 0
     total_completion_tokens = 0
     total_time = 0.0
     
-    for i in range(n):
-        res = model.generate(
-            prompt,
+    if batched and hasattr(model, 'generate_batch'):
+        # Batched generation
+        prompts = [prompt] * n
+        results = model.generate_batch(
+            prompts,
             temperature=getattr(policy, 'temperature', 0.7),
             top_p=getattr(policy, 'top_p', 1.0),
             top_k=getattr(policy, 'top_k', 50),
             do_sample=True,
-            seed=seed + i
+            seeds=None,
         )
-        total_prompt_tokens += res['prompt_tokens']
-        total_completion_tokens += res['completion_tokens']
-        total_time += res['time_s']
-        
-        # Score
-        sc = score_candidate(res['text'])
-        ans_val = normalize_answer_for_candidates(extract_final_answer(res['text']))
-        candidates.append(ans_val)
+        for res in results:
+            total_prompt_tokens += res['prompt_tokens']
+            total_completion_tokens += res['completion_tokens']
+            total_time += res['time_s']
+            
+            sc = score_candidate(res['text'])
+            ans_val = normalize_answer_for_candidates(extract_final_answer(res['text']))
+            candidates.append(ans_val)
+            all_texts.append(res['text'])
 
-        if sc > best_score:
-            best_score = sc
-            best_res = res
-            best_ans_val = ans_val
+            if sc > best_score:
+                best_score = sc
+                best_res = res
+                best_ans_val = ans_val
+    else:
+        # Serial generation (original behavior)
+        for i in range(n):
+            res = model.generate(
+                prompt,
+                temperature=getattr(policy, 'temperature', 0.7),
+                top_p=getattr(policy, 'top_p', 1.0),
+                top_k=getattr(policy, 'top_k', 50),
+                do_sample=True,
+                seed=seed + i
+            )
+            total_prompt_tokens += res['prompt_tokens']
+            total_completion_tokens += res['completion_tokens']
+            total_time += res['time_s']
+            
+            sc = score_candidate(res['text'])
+            ans_val = normalize_answer_for_candidates(extract_final_answer(res['text']))
+            candidates.append(ans_val)
+
+            if sc > best_score:
+                best_score = sc
+                best_res = res
+                best_ans_val = ans_val
     
     unique_candidates = set([c for c in candidates if c is not None])
     unique_frac = len(unique_candidates) / len(candidates) if candidates else 0.0
