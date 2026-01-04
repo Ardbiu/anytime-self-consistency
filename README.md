@@ -105,6 +105,7 @@ Each config `methods` entry must include `name` plus method-specific params:
 - `self_consistency_early_stop`: requires `policy`, `n_values`, and stopping params (`stop_ratio` or `stop_count`, plus `min_samples`).
 - `best_of_n_early_stop`: requires `policy`, `n_values`, and `score_threshold` (+ optional `min_samples`).
 - `anytime_sc`: require `policies`, `budgets`, `deltas` (and optional `allocation` like `ucb` or `uniform`).
+- `global_anytime_sc`: dataset-level global budget. Requires `policy`, `global_budget_tokens`, `init_k`, `allocation_policy`, and optional `max_samples_per_item`, `per_example_budget_tokens`, `ucb_c`, `store_allocation_steps`, `temperature`, `top_p`, `top_k`, `finalize`.
 
 Output files are named as:
 `{dataset}_{method}_{params}_{run_group}_seed{seed}_{run_id}.jsonl` (run_group omitted if not provided).
@@ -115,6 +116,11 @@ Output files are named as:
 ```bash
 # Runs gsm8k + gsm_plus with 2 seeds and strict checks
 bash scripts/suite_sanity.sh
+```
+
+### Global budget smoke test
+```bash
+bash scripts/global_smoke_test.sh
 ```
 
 You can also run the suite directly:
@@ -137,6 +143,13 @@ python scripts/diagnose_sampling.py --latest_group
 - `outputs/summaries/summary_per_run.csv`: per-seed/run summary (matches one JSONL file).
 - `outputs/summaries/summary_grouped.csv`: aggregated over seeds with CIs.
 - `outputs/plots/pareto_grouped.png`: grouped plot with error bars.
+- `outputs/summaries/summary_global_points.csv`: global budget accuracy points.
+- `outputs/summaries/summary_global_curve.csv`: AUC summary for global budget curves.
+- `outputs/plots/global_curve.png`: global budget curve plot.
+
+## ICML novelty: global compute allocation
+Prior work focuses on per-example budgets. We add a **global compute budget** setting where the method allocates generations across *examples* to maximize dataset accuracy. This tests adaptive allocation at the dataset level, not just stopping within a single example, and enables new policy ablations (uniform, uncertainty, VOI-lite, UCB, random, finish-one, per-example budget).
+The global setting also includes deterministic baselines like uniform per-example budgets and finish-one scheduling, so gains can be attributed to adaptive allocation.
 
 ### Ablations and analysis helpers
 ```bash
@@ -145,6 +158,9 @@ python scripts/ablation_table.py --latest_group
 
 # Significance testing (paired bootstrap)
 python scripts/significance_tests.py --latest_group --dataset gsm8k --method_a anytime_sc --method_b self_consistency --a_budget 1024 --a_delta 0.05 --a_allocation ucb --b_budget 1024
+
+# Global budget curve
+python scripts/plot_global_curve.py --latest_group
 
 # Error analysis breakdowns
 python scripts/error_analysis.py --latest_group

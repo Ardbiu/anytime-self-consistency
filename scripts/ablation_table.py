@@ -63,6 +63,43 @@ def main():
                 "delta_tokens": a["mean_avg_tokens"] - b["mean_avg_tokens"],
             })
 
+    # Allocation ablation for global_anytime_sc (vs uniform)
+    global_df = df[df["method"] == "global_anytime_sc"]
+    if not global_df.empty and "allocation" in global_df.columns:
+        budget_col = "global_budget_tokens" if "global_budget_tokens" in global_df.columns else "budget"
+        group_cols = ["dataset", budget_col, "policy", "init_k", "max_samples_per_item"]
+        for keys, g in global_df.groupby(group_cols, dropna=False):
+            dataset, budget, policy, init_k, max_k = keys
+            uniform = g[g["allocation"] == "uniform"]
+            if uniform.empty:
+                continue
+            base = first_row(uniform)
+            for _, row in g.iterrows():
+                if row.get("allocation") == "uniform":
+                    continue
+                records.append({
+                    "ablation": "global_allocation_vs_uniform",
+                    "dataset": dataset,
+                    "method_a": "global_anytime_sc",
+                    "method_b": "global_anytime_sc",
+                    "allocation_a": row.get("allocation"),
+                    "allocation_b": "uniform",
+                    "budget": budget,
+                    "policy": policy,
+                    "init_k": init_k,
+                    "max_samples_per_item": max_k,
+                    "mean_accuracy_a": row["mean_accuracy"],
+                    "mean_accuracy_b": base["mean_accuracy"],
+                    "delta_accuracy": row["mean_accuracy"] - base["mean_accuracy"],
+                    "mean_tokens_a": row["mean_total_tokens_sum"] if "mean_total_tokens_sum" in row else row["mean_avg_tokens"],
+                    "mean_tokens_b": base["mean_total_tokens_sum"] if "mean_total_tokens_sum" in base else base["mean_avg_tokens"],
+                    "delta_tokens": (
+                        row["mean_total_tokens_sum"] - base["mean_total_tokens_sum"]
+                        if "mean_total_tokens_sum" in row and "mean_total_tokens_sum" in base
+                        else row["mean_avg_tokens"] - base["mean_avg_tokens"]
+                    ),
+                })
+
     # Matched-budget fixed-N vs anytime (per budget)
     fixed_sc = df[df["method"] == "self_consistency"]
     fixed_bon = df[df["method"] == "best_of_n"]

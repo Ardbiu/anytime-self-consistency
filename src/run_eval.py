@@ -16,6 +16,7 @@ from .baselines import (
     run_best_of_n_early_stop,
 )
 from .anytime import run_anytime_sc
+from .global_anytime import run_global_anytime_sc
 
 logger = setup_logging("run_eval")
 
@@ -191,6 +192,52 @@ def run_eval(
             for b in method_cfg["budgets"]:
                 for d in method_cfg["deltas"]:
                      configs.append({"budget": b, "delta": d, "allocation": method_cfg.get("allocation", "ucb"), "policies": policies})
+        elif m_name == "global_anytime_sc":
+            policy_name, single_policy = resolve_single_policy()
+            if policy_name is None:
+                try:
+                    policy_name, single_policy = resolve_single_policy_from_name("direct")
+                except ValueError:
+                    policy_name = "raw"
+                    single_policy = None
+            if not single_policy and policy_name != "raw":
+                raise ValueError("global_anytime_sc requires a valid policy/prompt (or policy=raw).")
+            budgets = method_cfg.get("global_budget_tokens")
+            if budgets is None:
+                raise ValueError("global_anytime_sc requires global_budget_tokens.")
+            if isinstance(budgets, (int, float)):
+                budgets = [int(budgets)]
+            allocation_policies = method_cfg.get("allocation_policy", "uniform")
+            if isinstance(allocation_policies, str):
+                allocation_policies = [allocation_policies]
+            init_k = int(method_cfg.get("init_k", 1))
+            max_samples_per_item = method_cfg.get("max_samples_per_item")
+            per_example_budget_tokens = method_cfg.get("per_example_budget_tokens")
+            ucb_c = float(method_cfg.get("ucb_c", 1.0))
+            store_allocation_steps = bool(method_cfg.get("store_allocation_steps", False))
+            temperature = method_cfg.get("temperature", getattr(single_policy, "temperature", 0.7) if single_policy else 0.7)
+            top_p = method_cfg.get("top_p", getattr(single_policy, "top_p", 1.0) if single_policy else 1.0)
+            top_k = method_cfg.get("top_k", getattr(single_policy, "top_k", 50) if single_policy else 50)
+            finalize = method_cfg.get("finalize", "majority")
+
+            configs = []
+            for b in budgets:
+                for alloc in allocation_policies:
+                    configs.append({
+                        "global_budget_tokens": int(b),
+                        "allocation_policy": alloc,
+                        "init_k": init_k,
+                        "max_samples_per_item": max_samples_per_item,
+                        "per_example_budget_tokens": per_example_budget_tokens,
+                        "ucb_c": ucb_c,
+                        "store_allocation_steps": store_allocation_steps,
+                        "temperature": float(temperature),
+                        "top_p": float(top_p),
+                        "top_k": int(top_k),
+                        "policy": single_policy,
+                        "policy_name": policy_name,
+                        "finalize": finalize,
+                    })
         else:
             raise ValueError(f"Unknown method name: {m_name}")
         
@@ -212,6 +259,8 @@ def run_eval(
                 fname = f"{fname}_{run_cfg['policy'].name}"
             elif m_name == "anytime_sc":
                 fname = f"{dataset_name}_{m_name}_b{run_cfg['budget']}_d{run_cfg['delta']}_{run_cfg['allocation']}"
+            elif m_name == "global_anytime_sc":
+                fname = f"{dataset_name}_{m_name}_T{run_cfg['global_budget_tokens']}_init{run_cfg['init_k']}_{run_cfg['allocation_policy']}_{run_cfg['policy_name']}"
 
             if suffix:
                 fname = f"{fname}_{suffix}_{run_id}.jsonl"
@@ -223,38 +272,31 @@ def run_eval(
             
 
             with open(out_path, 'w') as f_out:
-                for example in tqdm(data):
+                if m_name == "global_anytime_sc":
+                    example_by_id = {ex.get("id"): ex for ex in data}
                     try:
-                        # Dispatch
-                        if m_name == "greedy":
-                            res = run_greedy(model, run_cfg["policy"], example)
-                        elif m_name == "self_consistency":
-                            res = run_self_consistency(model, run_cfg["policy"], example, run_cfg["n"])
-                        elif m_name == "best_of_n":
-                            res = run_best_of_n(model, run_cfg["policy"], example, run_cfg["n"])
-                        elif m_name == "self_consistency_early_stop":
-                            res = run_self_consistency_early_stop(
-                                model,
-                                run_cfg["policy"],
-                                example,
-                                run_cfg["n"],
-                                stop_ratio=run_cfg["stop_ratio"],
-                                stop_count=run_cfg["stop_count"],
-                                min_samples=run_cfg["min_samples"],
-                            )
-                        elif m_name == "best_of_n_early_stop":
-                            res = run_best_of_n_early_stop(
-                                model,
-                                run_cfg["policy"],
-                                example,
-                                run_cfg["n"],
-                                score_threshold=run_cfg["score_threshold"],
-                                min_samples=run_cfg["min_samples"],
-                            )
-                        elif m_name == "anytime_sc":
-                            res = run_anytime_sc(model, run_cfg["policies"], example, run_cfg["budget"], run_cfg["delta"], run_cfg["allocation"])
-                        
-                        # Inject Metadata
+                        results = run_global_anytime_sc(
+                            model,
+                            run_cfg["policy"],
+                            data,
+                            run_cfg["global_budget_tokens"],
+                            init_k=run_cfg["init_k"],
+                            allocation_policy=run_cfg["allocation_policy"],
+                            per_example_budget_tokens=run_cfg["per_example_budget_tokens"],
+                            ucb_c=run_cfg["ucb_c"],
+                            max_samples_per_item=run_cfg["max_samples_per_item"],
+                            temperature=run_cfg["temperature"],
+                            top_p=run_cfg["top_p"],
+                            top_k=run_cfg["top_k"],
+                            finalize=run_cfg["finalize"],
+                            store_allocation_steps=run_cfg["store_allocation_steps"],
+                            seed=seed,
+                        )
+                    except Exception as e:
+                        logger.error(f"Error running global_anytime_sc: {e}")
+                        continue
+
+                    for res in results:
                         res["dataset"] = dataset_name or "unknown"
                         res["split"] = split
                         res["model_name"] = config.get("model_name", "unknown")
@@ -262,23 +304,85 @@ def run_eval(
                         res["run_group"] = run_group
                         res["seed"] = seed
                         res["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                        if run_cfg.get("budget_tokens") is not None:
-                            res["budget_tokens"] = run_cfg["budget_tokens"]
-                        if run_cfg.get("tokens_per_sample") is not None:
-                            res["tokens_per_sample"] = run_cfg["tokens_per_sample"]
-                        
-                        # Ensure fields exist
-                        if "is_correct" not in res: res["is_correct"] = None
-                        if "target" not in res: res["target"] = example.get("target")
-                        if "parse_error" not in res: res["parse_error"] = example.get("parse_error", False)
-                        if "subject" not in res and "subject" in example:
-                            res["subject"] = example.get("subject")
+                        res["budget_tokens"] = run_cfg["global_budget_tokens"]
+                        res["allocation"] = run_cfg["allocation_policy"]
+                        res["init_k"] = run_cfg["init_k"]
+                        res["max_samples_per_item"] = run_cfg["max_samples_per_item"]
+                        res["per_example_budget_tokens"] = run_cfg["per_example_budget_tokens"]
+                        res["ucb_c"] = run_cfg["ucb_c"]
+                        res["store_allocation_steps"] = run_cfg["store_allocation_steps"]
+                        res["temperature"] = run_cfg["temperature"]
+                        res["top_p"] = run_cfg["top_p"]
+                        res["top_k"] = run_cfg["top_k"]
+                        res["finalize"] = run_cfg["finalize"]
+                        if "target" not in res:
+                            res["target"] = example_by_id.get(res.get("example_id"), {}).get("target")
+                        if "parse_error" not in res or "subject" not in res:
+                            ex = example_by_id.get(res.get("example_id"), {})
+                            if "parse_error" not in res:
+                                res["parse_error"] = ex.get("parse_error", False)
+                            if "subject" not in res and "subject" in ex:
+                                res["subject"] = ex.get("subject")
 
                         f_out.write(json.dumps(res) + "\n")
-                        f_out.flush() # Ensure safety
-                    except Exception as e:
-                        logger.error(f"Error processing example {example.get('id')}: {e}")
-                        continue
+                    f_out.flush()
+                else:
+                    for example in tqdm(data):
+                        try:
+                            # Dispatch
+                            if m_name == "greedy":
+                                res = run_greedy(model, run_cfg["policy"], example)
+                            elif m_name == "self_consistency":
+                                res = run_self_consistency(model, run_cfg["policy"], example, run_cfg["n"])
+                            elif m_name == "best_of_n":
+                                res = run_best_of_n(model, run_cfg["policy"], example, run_cfg["n"])
+                            elif m_name == "self_consistency_early_stop":
+                                res = run_self_consistency_early_stop(
+                                    model,
+                                    run_cfg["policy"],
+                                    example,
+                                    run_cfg["n"],
+                                    stop_ratio=run_cfg["stop_ratio"],
+                                    stop_count=run_cfg["stop_count"],
+                                    min_samples=run_cfg["min_samples"],
+                                )
+                            elif m_name == "best_of_n_early_stop":
+                                res = run_best_of_n_early_stop(
+                                    model,
+                                    run_cfg["policy"],
+                                    example,
+                                    run_cfg["n"],
+                                    score_threshold=run_cfg["score_threshold"],
+                                    min_samples=run_cfg["min_samples"],
+                                )
+                            elif m_name == "anytime_sc":
+                                res = run_anytime_sc(model, run_cfg["policies"], example, run_cfg["budget"], run_cfg["delta"], run_cfg["allocation"])
+                            
+                            # Inject Metadata
+                            res["dataset"] = dataset_name or "unknown"
+                            res["split"] = split
+                            res["model_name"] = config.get("model_name", "unknown")
+                            res["run_id"] = run_id
+                            res["run_group"] = run_group
+                            res["seed"] = seed
+                            res["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                            if run_cfg.get("budget_tokens") is not None:
+                                res["budget_tokens"] = run_cfg["budget_tokens"]
+                            if run_cfg.get("tokens_per_sample") is not None:
+                                res["tokens_per_sample"] = run_cfg["tokens_per_sample"]
+                            
+                            # Ensure fields exist
+                            if "is_correct" not in res: res["is_correct"] = None
+                            if "target" not in res: res["target"] = example.get("target")
+                            if "parse_error" not in res: res["parse_error"] = example.get("parse_error", False)
+                            if "subject" not in res and "subject" in example:
+                                res["subject"] = example.get("subject")
+
+                            f_out.write(json.dumps(res) + "\n")
+                            f_out.flush() # Ensure safety
+                        except Exception as e:
+                            logger.error(f"Error processing example {example.get('id')}: {e}")
+                            continue
 
 def main():
     parser = argparse.ArgumentParser()

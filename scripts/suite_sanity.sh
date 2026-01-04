@@ -6,13 +6,19 @@ echo "=== STARTING SUITE SANITY TEST ==="
 mkdir -p outputs/logs
 TMP_LOG_FILE="outputs/logs/suite_sanity_tmp.log"
 SANITY_SEEDS=${SANITY_SEEDS:-0,1,2}
+SANITY_DATASETS=${SANITY_DATASETS:-gsm8k,gsm_plus}
+SANITY_LIMIT=${SANITY_LIMIT:-}
 
 # Activate venv if exists
 if [ -f "venv/bin/activate" ]; then
     source venv/bin/activate
 fi
 
-python scripts/run_suite.py --config configs/suite_smoke.yaml --seeds "$SANITY_SEEDS" --datasets gsm8k,gsm_plus > "$TMP_LOG_FILE" 2>&1 || { cat "$TMP_LOG_FILE"; exit 1; }
+RUN_CMD=(python scripts/run_suite.py --config configs/suite_smoke.yaml --seeds "$SANITY_SEEDS" --datasets "$SANITY_DATASETS")
+if [ -n "$SANITY_LIMIT" ]; then
+    RUN_CMD+=(--limit "$SANITY_LIMIT")
+fi
+"${RUN_CMD[@]}" > "$TMP_LOG_FILE" 2>&1 || { cat "$TMP_LOG_FILE"; exit 1; }
 
 RUN_GROUP=$(grep -m1 "Run group:" "$TMP_LOG_FILE" | sed -E 's/.*Run group: //')
 if [ -z "$RUN_GROUP" ]; then
@@ -63,7 +69,7 @@ import sys
 import pandas as pd
 
 per_run = pd.read_csv("outputs/summaries/summary_per_run.csv")
-expected_limit = 10
+expected_limit = ${SANITY_LIMIT:-10}
 if "count" not in per_run.columns:
     sys.exit("FAIL: summary_per_run.csv missing count column.")
 if (per_run["count"] != expected_limit).any():

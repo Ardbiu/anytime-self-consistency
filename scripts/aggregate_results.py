@@ -139,6 +139,7 @@ def main():
 
         acc_vals = df["is_correct"].dropna().astype(float).tolist()
         tok_vals = df["total_tokens"].dropna().tolist()
+        total_tokens_sum = df["total_tokens"].dropna().sum()
         acc_low, acc_high = bootstrap_ci(acc_vals, n_boot=args.bootstrap)
         tokens_low, tokens_high = bootstrap_ci(tok_vals, n_boot=args.bootstrap)
 
@@ -148,9 +149,14 @@ def main():
             "method": first.get("method"),
             "n": first.get("n"),
             "budget": first.get("budget_tokens"),
+            "global_budget_tokens": first.get("global_budget_tokens", first.get("budget_tokens")),
             "delta": first.get("delta"),
             "allocation": first.get("allocation"),
             "policy": first.get("policy"),
+            "init_k": first.get("init_k"),
+            "max_samples_per_item": first.get("max_samples_per_item"),
+            "per_example_budget_tokens": first.get("per_example_budget_tokens"),
+            "ucb_c": first.get("ucb_c"),
             "run_id": run_id,
             "run_group": run_group,
             "seed": seed,
@@ -160,6 +166,7 @@ def main():
             "avg_tokens": df["total_tokens"].mean(),
             "avg_tokens_ci_low": tokens_low,
             "avg_tokens_ci_high": tokens_high,
+            "total_tokens_sum": total_tokens_sum,
             "avg_time_s": df["time_s"].mean(),
             "unique_candidate_frac": mean_unique_frac,
             "count": len(df),
@@ -176,9 +183,14 @@ def main():
                 "method": row.get("method"),
                 "n": row.get("n"),
                 "budget": row.get("budget_tokens"),
+                "global_budget_tokens": row.get("global_budget_tokens", row.get("budget_tokens")),
                 "delta": row.get("delta"),
                 "allocation": row.get("allocation"),
                 "policy": row.get("policy"),
+                "init_k": row.get("init_k"),
+                "max_samples_per_item": row.get("max_samples_per_item"),
+                "per_example_budget_tokens": row.get("per_example_budget_tokens"),
+                "ucb_c": row.get("ucb_c"),
                 "run_id": row.get("run_id"),
                 "run_group": row.get("run_group") or run_id,
                 "seed": row.get("seed", seed),
@@ -194,10 +206,11 @@ def main():
 
     per_run_df = pd.DataFrame(per_run_records)
     per_run_cols = [
-        "dataset", "method", "model_name", "n", "budget", "delta", "allocation", "policy",
+        "dataset", "method", "model_name", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy", "init_k", "max_samples_per_item",
+        "per_example_budget_tokens", "ucb_c",
         "accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "avg_tokens", "avg_tokens_ci_low", "avg_tokens_ci_high",
-        "unique_candidate_frac", "avg_time_s", "count", "run_id", "run_group", "seed"
+        "total_tokens_sum", "unique_candidate_frac", "avg_time_s", "count", "run_id", "run_group", "seed"
     ]
     per_run_cols = [c for c in per_run_cols if c in per_run_df.columns]
     per_run_df = per_run_df[per_run_cols]
@@ -214,7 +227,10 @@ def main():
 
     grouped_df["seed"] = grouped_df["seed"].fillna(-1)
 
-    group_cols = ["run_group", "dataset", "model_name", "method", "n", "budget", "delta", "allocation", "policy"]
+    group_cols = [
+        "run_group", "dataset", "model_name", "method", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
+        "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c"
+    ]
     grouped_records = []
     for keys, gdf in grouped_df.groupby(group_cols, dropna=False):
         seed_stats = gdf.groupby("seed").agg(
@@ -225,10 +241,12 @@ def main():
         seed_accs = seed_stats["accuracy_mean"].dropna().tolist()
         seed_tokens = seed_stats["tokens_mean"].dropna().tolist()
         seed_unique = seed_stats["unique_mean"].dropna().tolist()
+        seed_total_tokens = gdf.groupby("seed")["total_tokens"].sum().dropna().tolist()
 
         acc_low, acc_high = bootstrap_ci(gdf["is_correct"].dropna().astype(float).tolist(), n_boot=args.bootstrap)
         tok_low, tok_high = bootstrap_ci(gdf["total_tokens"].dropna().tolist(), n_boot=args.bootstrap)
         uniq_low, uniq_high = bootstrap_ci(gdf["unique_candidate_frac"].dropna().tolist(), n_boot=args.bootstrap)
+        sum_low, sum_high = bootstrap_ci(seed_total_tokens, n_boot=args.bootstrap)
 
         record = dict(zip(group_cols, keys))
         record.update({
@@ -241,6 +259,10 @@ def main():
             "std_avg_tokens": float(np.std(seed_tokens, ddof=1)) if len(seed_tokens) > 1 else 0.0,
             "tokens_ci_low": tok_low,
             "tokens_ci_high": tok_high,
+            "mean_total_tokens_sum": float(np.mean(seed_total_tokens)) if seed_total_tokens else np.nan,
+            "std_total_tokens_sum": float(np.std(seed_total_tokens, ddof=1)) if len(seed_total_tokens) > 1 else 0.0,
+            "total_tokens_sum_ci_low": sum_low,
+            "total_tokens_sum_ci_high": sum_high,
             "mean_unique_candidate_frac": float(np.mean(seed_unique)) if seed_unique else np.nan,
             "unique_candidate_frac_ci_low": uniq_low,
             "unique_candidate_frac_ci_high": uniq_high,
@@ -250,9 +272,11 @@ def main():
 
     grouped_summary_df = pd.DataFrame(grouped_records)
     grouped_cols = [
-        "run_group", "dataset", "method", "model_name", "n", "budget", "delta", "allocation", "policy",
+        "run_group", "dataset", "method", "model_name", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy", "init_k", "max_samples_per_item",
+        "per_example_budget_tokens", "ucb_c",
         "mean_accuracy", "std_accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "mean_avg_tokens", "std_avg_tokens", "tokens_ci_low", "tokens_ci_high",
+        "mean_total_tokens_sum", "std_total_tokens_sum", "total_tokens_sum_ci_low", "total_tokens_sum_ci_high",
         "mean_unique_candidate_frac", "unique_candidate_frac_ci_low", "unique_candidate_frac_ci_high",
         "seed_count", "count"
     ]
@@ -262,6 +286,45 @@ def main():
     os.makedirs(os.path.dirname(args.output_grouped), exist_ok=True)
     grouped_summary_df.to_csv(args.output_grouped, index=False)
     print(f"Saved grouped summary to {args.output_grouped}")
+
+    global_df = grouped_summary_df[grouped_summary_df["method"] == "global_anytime_sc"].copy()
+    if not global_df.empty:
+        points_cols = [
+            "run_group", "dataset", "method", "model_name", "budget", "global_budget_tokens",
+            "allocation", "policy", "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
+            "mean_accuracy", "accuracy_ci_low", "accuracy_ci_high",
+            "mean_total_tokens_sum", "total_tokens_sum_ci_low", "total_tokens_sum_ci_high",
+            "seed_count", "count",
+        ]
+        points_cols = [c for c in points_cols if c in global_df.columns]
+        global_points = global_df[points_cols]
+        points_path = "outputs/summaries/summary_global_points.csv"
+        os.makedirs(os.path.dirname(points_path), exist_ok=True)
+        global_points.to_csv(points_path, index=False)
+        print(f"Saved global points to {points_path}")
+
+        curve_records = []
+        group_cols = ["run_group", "dataset", "model_name", "allocation", "policy", "init_k", "max_samples_per_item"]
+        for keys, gdf in global_df.groupby(group_cols, dropna=False):
+            gdf = gdf.dropna(subset=["mean_total_tokens_sum", "mean_accuracy"]).sort_values("mean_total_tokens_sum")
+            if len(gdf) < 2:
+                continue
+            x = gdf["mean_total_tokens_sum"].to_numpy()
+            y = gdf["mean_accuracy"].to_numpy()
+            auc = float(np.trapezoid(y, x))
+            record = dict(zip(group_cols, keys))
+            record.update({
+                "auc": auc,
+                "max_tokens": float(np.max(x)),
+                "n_points": int(len(gdf)),
+            })
+            curve_records.append(record)
+
+        if curve_records:
+            curve_df = pd.DataFrame(curve_records)
+            curve_path = "outputs/summaries/summary_global_curve.csv"
+            curve_df.to_csv(curve_path, index=False)
+            print(f"Saved global curve summary to {curve_path}")
 
 if __name__ == "__main__":
     main()

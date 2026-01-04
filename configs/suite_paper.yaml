@@ -53,4 +53,15 @@ methods:
     deltas: [0.05]
     allocation: "uniform"
 
+  - name: "global_anytime_sc"
+    policy: "cot"
+    global_budget_tokens: [50000, 100000, 200000, 400000]
+    init_k: 1
+    allocation_policy: ["uniform", "uncertainty", "voi", "ucb", "random", "finish_one", "per_example_budget"]
+    max_samples_per_item: 20
+    temperature: 0.7
+    top_p: 1.0
+    top_k: 50
+    ucb_c: 1.0
+
 output_dir: "outputs/runs/"
