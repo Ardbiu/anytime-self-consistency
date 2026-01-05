@@ -143,11 +143,19 @@ def run_eval(
             if not single_policy:
                 raise ValueError("self_consistency requires a valid policy/prompt.")
             configs = build_fixed_n_configs(method_cfg, policy_name, single_policy, "self_consistency")
+            # Add batched flag to all configs
+            batched = method_cfg.get("batched", False)
+            for cfg in configs:
+                cfg["batched"] = batched
         elif m_name == "best_of_n":
             policy_name, single_policy = resolve_single_policy()
             if not single_policy:
                 raise ValueError("best_of_n requires a valid policy/prompt.")
             configs = build_fixed_n_configs(method_cfg, policy_name, single_policy, "best_of_n")
+            # Add batched flag to all configs
+            batched = method_cfg.get("batched", False)
+            for cfg in configs:
+                cfg["batched"] = batched
         elif m_name == "best_of_n_verifier":
             if "n_values" not in method_cfg:
                 raise ValueError("best_of_n_verifier requires n_values.")
@@ -372,10 +380,10 @@ def run_eval(
                             # Dispatch
                             if m_name == "greedy":
                                 res = run_greedy(model, run_cfg["policy"], example)
-                            elif m_name == "self_consistency":
-                                res = run_self_consistency(model, run_cfg["policy"], example, run_cfg["n"])
-                            elif m_name == "best_of_n":
-                                res = run_best_of_n(model, run_cfg["policy"], example, run_cfg["n"])
+                            elif m_name == \"self_consistency\":
+                                res = run_self_consistency(model, run_cfg[\"policy\"], example, run_cfg[\"n\"], batched=run_cfg.get(\"batched\", False))
+                            elif m_name == \"best_of_n\":
+                                res = run_best_of_n(model, run_cfg[\"policy\"], example, run_cfg[\"n\"], batched=run_cfg.get(\"batched\", False))
                             elif m_name == "best_of_n_verifier":
                                 res = run_best_of_n_verifier(
                                     model,
