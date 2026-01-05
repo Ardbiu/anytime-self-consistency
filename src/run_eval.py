@@ -380,10 +380,10 @@ def run_eval(
                             # Dispatch
                             if m_name == "greedy":
                                 res = run_greedy(model, run_cfg["policy"], example)
-                            elif m_name == \"self_consistency\":
-                                res = run_self_consistency(model, run_cfg[\"policy\"], example, run_cfg[\"n\"], batched=run_cfg.get(\"batched\", False))
-                            elif m_name == \"best_of_n\":
-                                res = run_best_of_n(model, run_cfg[\"policy\"], example, run_cfg[\"n\"], batched=run_cfg.get(\"batched\", False))
+                            elif m_name == "self_consistency":
+                                res = run_self_consistency(model, run_cfg["policy"], example, run_cfg["n"], batched=run_cfg.get("batched", False))
+                            elif m_name == "best_of_n":
+                                res = run_best_of_n(model, run_cfg["policy"], example, run_cfg["n"], batched=run_cfg.get("batched", False))
                             elif m_name == "best_of_n_verifier":
                                 res = run_best_of_n_verifier(
                                     model,
