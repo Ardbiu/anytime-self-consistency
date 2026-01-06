@@ -119,6 +119,15 @@ Output files are named as:
 bash scripts/suite_sanity.sh
 ```
 
+### Hero configs (paper-ready)
+```bash
+# Full GSM8K with strong baselines (greedy + SC + Adaptive SC + Anytime + Global)
+python -m src.run_eval --config configs/paper_hero.yaml --seed 0 --run_group hero_gsm8k
+
+# GSM8K full + GSM-Plus (limited) with the same hero methods
+python scripts/run_suite.py --config configs/paper_hero_suite.yaml --seeds 0,1 --datasets gsm8k,gsm_plus --run_group hero_suite
+```
+
 ### Global budget smoke test
 ```bash
 bash scripts/global_smoke_test.sh
@@ -139,6 +148,14 @@ python scripts/aggregate_results.py --latest_group --bootstrap 1000
 python scripts/plot_pareto.py --latest_group --grouped
 python scripts/diagnose_sampling.py --latest_group
 ```
+
+## Pseudo-validation for ucb_c
+To avoid tuning on test, sweep `ucb_c` on a small training subset (first 200 examples):
+```bash
+python scripts/tune_ucb_c.py --config configs/paper_hero.yaml --dataset gsm8k --limit 200 --ucb_c 0.5,1.0,2.0
+python scripts/aggregate_results.py --latest_group --bootstrap 200
+```
+Pick the best `ucb_c` from the grouped summary and use it in your final test run.
 
 ### Outputs to expect
 - `outputs/summaries/summary_per_run.csv`: per-seed/run summary (matches one JSONL file).

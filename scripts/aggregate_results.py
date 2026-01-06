@@ -154,6 +154,7 @@ def main():
             "allocation": first.get("allocation"),
             "policy": first.get("policy"),
             "verifier_model_name": first.get("verifier_model_name"),
+            "batched": first.get("batched"),
             "batch_size": first.get("batch_size"),
             "allow_unseeded_batch": first.get("allow_unseeded_batch"),
             "init_k": first.get("init_k"),
@@ -191,6 +192,7 @@ def main():
                 "allocation": row.get("allocation"),
                 "policy": row.get("policy"),
                 "verifier_model_name": row.get("verifier_model_name"),
+                "batched": row.get("batched"),
                 "batch_size": row.get("batch_size"),
                 "allow_unseeded_batch": row.get("allow_unseeded_batch"),
                 "init_k": row.get("init_k"),
@@ -213,7 +215,7 @@ def main():
     per_run_df = pd.DataFrame(per_run_records)
     per_run_cols = [
         "dataset", "method", "model_name", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
-        "verifier_model_name", "batch_size", "allow_unseeded_batch",
+        "verifier_model_name", "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
         "accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "avg_tokens", "avg_tokens_ci_low", "avg_tokens_ci_high",
@@ -236,7 +238,7 @@ def main():
 
     group_cols = [
         "run_group", "dataset", "model_name", "method", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
-        "verifier_model_name", "batch_size", "allow_unseeded_batch",
+        "verifier_model_name", "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c"
     ]
     grouped_records = []
@@ -281,7 +283,7 @@ def main():
     grouped_summary_df = pd.DataFrame(grouped_records)
     grouped_cols = [
         "run_group", "dataset", "method", "model_name", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
-        "verifier_model_name", "batch_size", "allow_unseeded_batch",
+        "verifier_model_name", "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
         "mean_accuracy", "std_accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "mean_avg_tokens", "std_avg_tokens", "tokens_ci_low", "tokens_ci_high",

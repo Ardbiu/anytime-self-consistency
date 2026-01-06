@@ -171,12 +171,14 @@ def run_eval(
                 dtype="float16" if "gpu" in str(config).lower() else "auto",
                 max_new_tokens=verifier_max_new_tokens,
             )
+            batched = method_cfg.get("batched", False)
             configs = [
                 {
                     "n": n,
                     "policy": single_policy,
                     "policy_name": policy_name,
                     "verifier_model_name": verifier_model_name,
+                    "batched": batched,
                 }
                 for n in method_cfg["n_values"]
             ]
@@ -391,6 +393,7 @@ def run_eval(
                                     example,
                                     run_cfg["n"],
                                     verifier_model,
+                                    batched=run_cfg.get("batched", False),
                                 )
                             elif m_name == "self_consistency_early_stop":
                                 res = run_self_consistency_early_stop(
@@ -443,6 +446,8 @@ def run_eval(
                                 res["batch_size"] = run_cfg["batch_size"]
                             if run_cfg.get("allow_unseeded_batch") is not None:
                                 res["allow_unseeded_batch"] = run_cfg["allow_unseeded_batch"]
+                            if run_cfg.get("batched") is not None:
+                                res["batched"] = run_cfg["batched"]
 
                             # Ensure fields exist
                             if "is_correct" not in res:

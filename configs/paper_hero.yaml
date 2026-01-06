@@ -1,0 +1,41 @@
+dataset: "gsm8k"
+split: "test"
+limit: null
+seed: 42
+
+model_name: "Qwen/Qwen2.5-7B-Instruct"
+max_new_tokens: 256
+
+policies: ["direct", "cot"]
+
+methods:
+  - name: "greedy"
+    policy: "direct"
+
+  - name: "self_consistency"
+    policy: "cot"
+    n_values: [10]
+    batched: true
+
+  - name: "self_consistency_early_stop"
+    policy: "cot"
+    n_values: [10]
+    stop_ratio: 0.6
+    min_samples: 3
+
+  - name: "anytime_sc"
+    policies: ["direct", "cot"]
+    budgets: [1024, 2048]
+    deltas: [0.05]
+    allocation: "ucb"
+    batch_size: 4
+    allow_unseeded_batch: true
+
+  - name: "global_anytime_sc"
+    policy: "cot"
+    global_budget_tokens: [1000000, 2000000, 4000000]
+    init_k: 2
+    allocation_policy: ["ucb", "voi"]
+    ucb_c: 1.0
+
+output_dir: "outputs/runs/"
