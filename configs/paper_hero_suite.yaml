@@ -6,10 +6,11 @@ seed: 42
 model_name: "Qwen/Qwen2.5-7B-Instruct"
 max_new_tokens: 256
 
-datasets: ["gsm8k", "gsm_plus"]
+datasets: ["gsm8k", "gsm_plus", "hendrycks_math"]
 dataset_limits:
   gsm8k: null
   gsm_plus: 200
+  hendrycks_math: 200
 
 policies: ["direct", "cot"]
 
@@ -20,6 +21,8 @@ methods:
   - name: "self_consistency"
     policy: "cot"
     n_values: [10]
+    match_budgets: [1024, 2048]
+    tokens_per_sample: 128
     batched: true
 
   - name: "self_consistency_early_stop"
@@ -40,7 +43,7 @@ methods:
     policy: "cot"
     global_budget_tokens: [1000000, 2000000]
     init_k: 2
-    allocation_policy: ["ucb", "voi"]
+    allocation_policy: ["ucb", "voi", "per_example_budget"]
     ucb_c: 1.0
 
 output_dir: "outputs/runs/"

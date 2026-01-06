@@ -128,6 +128,15 @@ python -m src.run_eval --config configs/paper_hero.yaml --seed 0 --run_group her
 python scripts/run_suite.py --config configs/paper_hero_suite.yaml --seeds 0,1 --datasets gsm8k,gsm_plus --run_group hero_suite
 ```
 
+### Model-agnostic and hard-benchmark runs
+```bash
+# Second model family (Mistral 7B) on a 250-sample GSM8K subset
+python -m src.run_eval --config configs/paper_model_agnostic.yaml --seed 0 --run_group model_agnostic
+
+# Hard benchmark (Hendrycks MATH) subset
+python -m src.run_eval --config configs/paper_hard_math.yaml --seed 0 --run_group hard_math
+```
+
 ### Global budget smoke test
 ```bash
 bash scripts/global_smoke_test.sh
@@ -179,6 +188,9 @@ python scripts/significance_tests.py --latest_group --dataset gsm8k --method_a a
 
 # Global budget curve
 python scripts/plot_global_curve.py --latest_group
+
+# Accuracy vs wall-clock time (grouped)
+python scripts/plot_pareto.py --latest_group --grouped --x_metric time
 
 # Error analysis breakdowns
 python scripts/error_analysis.py --latest_group

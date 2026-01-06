@@ -246,15 +246,18 @@ def main():
         seed_stats = gdf.groupby("seed").agg(
             accuracy_mean=("is_correct", "mean"),
             tokens_mean=("total_tokens", "mean"),
+            time_mean=("time_s", "mean"),
             unique_mean=("unique_candidate_frac", "mean"),
         )
         seed_accs = seed_stats["accuracy_mean"].dropna().tolist()
         seed_tokens = seed_stats["tokens_mean"].dropna().tolist()
+        seed_times = seed_stats["time_mean"].dropna().tolist()
         seed_unique = seed_stats["unique_mean"].dropna().tolist()
         seed_total_tokens = gdf.groupby("seed")["total_tokens"].sum().dropna().tolist()
 
         acc_low, acc_high = bootstrap_ci(gdf["is_correct"].dropna().astype(float).tolist(), n_boot=args.bootstrap)
         tok_low, tok_high = bootstrap_ci(gdf["total_tokens"].dropna().tolist(), n_boot=args.bootstrap)
+        time_low, time_high = bootstrap_ci(gdf["time_s"].dropna().tolist(), n_boot=args.bootstrap)
         uniq_low, uniq_high = bootstrap_ci(gdf["unique_candidate_frac"].dropna().tolist(), n_boot=args.bootstrap)
         sum_low, sum_high = bootstrap_ci(seed_total_tokens, n_boot=args.bootstrap)
 
@@ -269,6 +272,10 @@ def main():
             "std_avg_tokens": float(np.std(seed_tokens, ddof=1)) if len(seed_tokens) > 1 else 0.0,
             "tokens_ci_low": tok_low,
             "tokens_ci_high": tok_high,
+            "mean_avg_time_s": float(np.mean(seed_times)) if seed_times else np.nan,
+            "std_avg_time_s": float(np.std(seed_times, ddof=1)) if len(seed_times) > 1 else 0.0,
+            "time_ci_low": time_low,
+            "time_ci_high": time_high,
             "mean_total_tokens_sum": float(np.mean(seed_total_tokens)) if seed_total_tokens else np.nan,
             "std_total_tokens_sum": float(np.std(seed_total_tokens, ddof=1)) if len(seed_total_tokens) > 1 else 0.0,
             "total_tokens_sum_ci_low": sum_low,
@@ -287,6 +294,7 @@ def main():
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
         "mean_accuracy", "std_accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "mean_avg_tokens", "std_avg_tokens", "tokens_ci_low", "tokens_ci_high",
+        "mean_avg_time_s", "std_avg_time_s", "time_ci_low", "time_ci_high",
         "mean_total_tokens_sum", "std_total_tokens_sum", "total_tokens_sum_ci_low", "total_tokens_sum_ci_high",
         "mean_unique_candidate_frac", "unique_candidate_frac_ci_low", "unique_candidate_frac_ci_high",
         "seed_count", "count"

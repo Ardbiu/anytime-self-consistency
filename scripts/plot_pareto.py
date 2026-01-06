@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--run_group", type=str, help="Specific run_group to plot")
     parser.add_argument("--latest_group", action="store_true", help="Plot only the latest run_group found in summary")
     parser.add_argument("--grouped", action="store_true", help="Plot grouped summary with CIs")
+    parser.add_argument("--x_metric", type=str, default="tokens", choices=["tokens", "time"], help="X-axis metric: tokens or time")
     args = parser.parse_args()
 
     default_grouped = "outputs/summaries/summary_grouped.csv"
@@ -78,12 +79,24 @@ def main():
         else:
             args.output = "outputs/plots/pareto.png"
 
-    x_col = "mean_avg_tokens" if args.grouped else "avg_tokens"
+    if args.x_metric == "time":
+        x_col = "mean_avg_time_s" if args.grouped else "avg_time_s"
+        x_low_col = "time_ci_low" if args.grouped else None
+        x_high_col = "time_ci_high" if args.grouped else None
+        x_label = "Average Time per Example (s)"
+    else:
+        x_col = "mean_avg_tokens" if args.grouped else "avg_tokens"
+        x_low_col = "tokens_ci_low" if args.grouped else "avg_tokens_ci_low"
+        x_high_col = "tokens_ci_high" if args.grouped else "avg_tokens_ci_high"
+        x_label = "Average Total Tokens per Example"
+
     y_col = "mean_accuracy" if args.grouped else "accuracy"
-    x_low_col = "tokens_ci_low" if args.grouped else "avg_tokens_ci_low"
-    x_high_col = "tokens_ci_high" if args.grouped else "avg_tokens_ci_high"
     y_low_col = "accuracy_ci_low"
     y_high_col = "accuracy_ci_high"
+
+    if x_col not in df.columns:
+        print(f"Error: X-axis column '{x_col}' not found in summary. Did you run aggregate_results with time metrics?")
+        sys.exit(1)
 
     datasets = df["dataset"].dropna().unique().tolist() if "dataset" in df.columns else ["all"]
     fig, axes = plt.subplots(len(datasets), 1, figsize=(10, 6 * len(datasets)), squeeze=False)
@@ -188,7 +201,7 @@ def main():
 
         title_suffix = f" ({dataset})" if dataset != "all" else ""
         ax.set_title(f"Accuracy vs Compute{title_suffix}")
-        ax.set_xlabel("Average Total Tokens per Example")
+        ax.set_xlabel(x_label)
         ax.set_ylabel("Accuracy")
         ax.grid(True, alpha=0.3)
         ax.legend()
