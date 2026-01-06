@@ -3,6 +3,7 @@ import yaml
 import json
 import os
 import time
+import hashlib
 from tqdm import tqdm
 from .utils import setup_logging, set_seed, ensure_dir
 from .data import load_dataset_records
@@ -40,9 +41,13 @@ def run_eval(
     split = config.get("split", "test")
     seed = seed_override if seed_override is not None else config.get("seed", 42)
     run_group = run_group or config.get("run_group")
+    cache_enabled = bool(config.get("cache_enabled", True))
+    cache_path = config.get("cache_path") or "outputs/cache/cache.jsonl"
 
     set_seed(seed)
     ensure_dir(config["output_dir"])
+    if cache_enabled:
+        ensure_dir(os.path.dirname(cache_path))
 
     data = load_dataset_records(
         dataset_name,
@@ -67,6 +72,71 @@ def run_eval(
     logger.info(f"Global Run ID: {run_id}")
 
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    cache_records = {}
+    cache_global_done = set()
+    if cache_enabled and os.path.exists(cache_path):
+        with open(cache_path, "r") as cache_file:
+            for line in cache_file:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                key = rec.get("cache_key")
+                scope = rec.get("cache_scope")
+                if scope == "global" and rec.get("completed"):
+                    if key:
+                        cache_global_done.add(key)
+                elif key:
+                    cache_records[key] = rec
+
+    def _policy_name(policy_obj):
+        if policy_obj is None:
+            return "raw"
+        return getattr(policy_obj, "name", "unknown")
+
+    def _params_hash(method_name, run_cfg):
+        payload = {
+            "dataset": dataset_name,
+            "split": split,
+            "seed": seed,
+            "model_name": config.get("model_name"),
+            "max_new_tokens": config.get("max_new_tokens", 512),
+            "method": method_name,
+            "policy": _policy_name(run_cfg.get("policy")),
+            "policy_name": run_cfg.get("policy_name"),
+            "policies": [p.name for p in run_cfg.get("policies", [])] if run_cfg.get("policies") else None,
+            "n": run_cfg.get("n"),
+            "budget": run_cfg.get("budget"),
+            "budget_tokens": run_cfg.get("budget_tokens"),
+            "delta": run_cfg.get("delta"),
+            "allocation": run_cfg.get("allocation"),
+            "global_budget_tokens": run_cfg.get("global_budget_tokens"),
+            "allocation_policy": run_cfg.get("allocation_policy"),
+            "init_k": run_cfg.get("init_k"),
+            "max_samples_per_item": run_cfg.get("max_samples_per_item"),
+            "per_example_budget_tokens": run_cfg.get("per_example_budget_tokens"),
+            "ucb_c": run_cfg.get("ucb_c"),
+            "temperature": run_cfg.get("temperature"),
+            "top_p": run_cfg.get("top_p"),
+            "top_k": run_cfg.get("top_k"),
+            "finalize": run_cfg.get("finalize"),
+            "batch_size": run_cfg.get("batch_size"),
+            "allow_unseeded_batch": run_cfg.get("allow_unseeded_batch"),
+            "batched": run_cfg.get("batched"),
+            "verifier_model_name": run_cfg.get("verifier_model_name"),
+        }
+        data = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(data).hexdigest()[:12]
+
+    def _cache_key(qid, method_name, params_hash):
+        return f"{dataset_name}||{split}||{qid}||{method_name}||{params_hash}"
+
+    def _global_cache_key(method_name, params_hash):
+        return f"{dataset_name}||{split}||{method_name}||{params_hash}||global"
 
     for method_cfg in config["methods"]:
         m_name = method_cfg["name"]
@@ -289,6 +359,7 @@ def run_eval(
             raise ValueError(f"Unknown method name: {m_name}")
         
         for run_cfg in configs:
+            params_hash = _params_hash(m_name, run_cfg)
             # Construct filename
             suffix_parts = []
             if run_group:
@@ -319,9 +390,17 @@ def run_eval(
             
             out_path = os.path.join(config["output_dir"], fname)
             logger.info(f"Starting run for {fname}...")
-            
+
+            if m_name == "global_anytime_sc":
+                global_cache_key = _global_cache_key(m_name, params_hash)
+                if cache_enabled and global_cache_key in cache_global_done:
+                    logger.info(f"Skipping global run (cached): {global_cache_key}")
+                    continue
 
             with open(out_path, 'w') as f_out:
+                cache_file = None
+                if cache_enabled:
+                    cache_file = open(cache_path, "a")
                 if m_name == "global_anytime_sc":
                     example_by_id = {ex.get("id"): ex for ex in data}
                     try:
@@ -354,6 +433,7 @@ def run_eval(
                         res["run_group"] = run_group
                         res["seed"] = seed
                         res["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                        res["params_hash"] = params_hash
                         res["budget_tokens"] = run_cfg["global_budget_tokens"]
                         res["allocation"] = run_cfg["allocation_policy"]
                         res["init_k"] = run_cfg["init_k"]
@@ -376,9 +456,46 @@ def run_eval(
 
                         f_out.write(json.dumps(res) + "\n")
                     f_out.flush()
+                    if cache_file:
+                        cache_file.write(json.dumps({
+                            "cache_scope": "global",
+                            "cache_key": global_cache_key,
+                            "completed": True,
+                            "dataset": dataset_name,
+                            "split": split,
+                            "method": m_name,
+                            "params_hash": params_hash,
+                            "global_budget_tokens": run_cfg["global_budget_tokens"],
+                            "allocation": run_cfg["allocation_policy"],
+                            "run_id": run_id,
+                            "run_group": run_group,
+                            "seed": seed,
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        }) + "\n")
+                        cache_file.flush()
                 else:
                     for example in tqdm(data):
                         try:
+                            cache_key = _cache_key(example.get("id"), m_name, params_hash)
+                            if cache_enabled and cache_key in cache_records:
+                                cached = dict(cache_records[cache_key])
+                                cached["cached"] = True
+                                cached["run_id"] = run_id
+                                cached["run_group"] = run_group
+                                cached["seed"] = seed
+                                cached["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                                if "dataset" not in cached:
+                                    cached["dataset"] = dataset_name or "unknown"
+                                if "split" not in cached:
+                                    cached["split"] = split
+                                if "method" not in cached:
+                                    cached["method"] = m_name
+                                if "model_name" not in cached:
+                                    cached["model_name"] = config.get("model_name", "unknown")
+                                if "total_tokens" not in cached and "tokens_used" in cached:
+                                    cached["total_tokens"] = cached.get("tokens_used")
+                                f_out.write(json.dumps(cached) + "\n")
+                                continue
                             # Dispatch
                             if m_name == "greedy":
                                 res = run_greedy(model, run_cfg["policy"], example)
@@ -436,6 +553,7 @@ def run_eval(
                             res["run_group"] = run_group
                             res["seed"] = seed
                             res["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                            res["params_hash"] = params_hash
                             if run_cfg.get("budget_tokens") is not None:
                                 res["budget_tokens"] = run_cfg["budget_tokens"]
                             if run_cfg.get("tokens_per_sample") is not None:
@@ -461,9 +579,31 @@ def run_eval(
 
                             f_out.write(json.dumps(res) + "\n")
                             f_out.flush() # Ensure safety
+                            if cache_file:
+                                cache_record = dict(res)
+                                cache_record.update({
+                                    "cache_scope": "example",
+                                    "cache_key": cache_key,
+                                    "dataset": dataset_name or "unknown",
+                                    "split": split,
+                                    "qid": example.get("id"),
+                                    "method": m_name,
+                                    "params_hash": params_hash,
+                                    "final_answer": res.get("pred"),
+                                    "tokens_used": res.get("total_tokens"),
+                                    "time_s": res.get("time_s"),
+                                    "cached": False,
+                                })
+                                extra = res.get("extra", {})
+                                if isinstance(extra, dict) and "candidates" in extra:
+                                    cache_record["all_answers"] = extra.get("candidates")
+                                cache_file.write(json.dumps(cache_record) + "\n")
+                                cache_file.flush()
                         except Exception as e:
                             logger.error(f"Error processing example {example.get('id')}: {e}")
                             continue
+                if cache_file:
+                    cache_file.close()
 
 def main():
     parser = argparse.ArgumentParser()

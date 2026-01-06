@@ -61,6 +61,20 @@ python scripts/aggregate_results.py --latest_group --bootstrap 200
 python scripts/plot_pareto.py --latest_group --grouped
 ```
 
+## Cache + Resume (per-example)
+Per-example runs (greedy/SC/BoN/anytime) support minimal resume using an append-only JSONL cache.
+- Default cache path: `outputs/cache/cache.jsonl`
+- Keys: `(dataset, split, qid, method, params_hash)`
+
+To disable or redirect:
+```yaml
+cache_enabled: false
+# or
+cache_path: "outputs/cache/my_cache.jsonl"
+```
+
+Global runs are **all-or-nothing**: a completion marker is written after the run finishes; if present, the run is skipped.
+
 ## Config Schema (methods)
 Each entry in `methods` must include `name` and method-specific params:
 - `greedy`: optional `policy` or `prompt` (defaults to `direct` if available).
