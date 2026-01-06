@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 
 from .models import ModelRunner
-from .policies import Policy, make_prompt
+from .policies import Policy, make_prompt, BwKShadowPricePolicy
 from .scoring import extract_final_answer, normalize_answer_for_candidates, compare_answer_values, score_candidate
 
 def _gini(values: List[int]) -> float:
@@ -55,6 +55,11 @@ def run_global_anytime_sc(
     store_allocation_steps: bool = False,
     seed: int = 42,
 ) -> List[Dict[str, Any]]:
+    """
+    Global allocation with a single knapsack budget (BwK setting).
+    If allocation_policy == "bwk", uses a primal-dual shadow price
+    (Agrawal & Devanur, 2014) to trade off utility vs cost.
+    """
     allocation_policy = (allocation_policy or "uniform").lower()
     finalize = (finalize or "majority").lower()
     max_samples = None if max_samples_per_item is None else int(max_samples_per_item)
@@ -87,14 +92,16 @@ def run_global_anytime_sc(
             "reward_n": 0,
         })
 
-    total_tokens_global = 0
+    total_tokens_consumed = 0
     allocation_idx = 0
     finish_idx = 0
     stop = False
     steps = []
+    bwk_policy = BwKShadowPricePolicy() if allocation_policy == "bwk" else None
+    target_tokens = float(global_budget_tokens) / max(1, len(examples))
 
     def sample_once(ex_idx: int, sample_idx: int) -> None:
-        nonlocal total_tokens_global
+        nonlocal total_tokens_consumed
         state = states[ex_idx]
         before_counts = state["counts"].copy()
         before_total = sum(before_counts.values())
@@ -110,7 +117,7 @@ def run_global_anytime_sc(
             do_sample=True,
             seed=seed + ex_idx * 1000 + sample_idx,
         )
-        total_tokens_global += res["total_tokens"]
+        total_tokens_consumed += res["total_tokens"]
         state["prompt_tokens"] += res["prompt_tokens"]
         state["completion_tokens"] += res["completion_tokens"]
         state["total_tokens"] += res["total_tokens"]
@@ -136,15 +143,19 @@ def run_global_anytime_sc(
         state["reward_sum"] += reward
         state["reward_n"] += 1
 
+        if bwk_policy is not None:
+            bwk_policy.update_price(res["total_tokens"], target_tokens)
+
         steps.append({
             "t": len(steps) + 1,
             "example_id": examples[ex_idx].get("id"),
             "allocation": allocation_policy,
-            "tokens_total": total_tokens_global,
+            "tokens_total": total_tokens_consumed,
             "n_samples": state["n_samples"],
             "reward": reward,
             "confidence": after_conf,
             "entropy": after_entropy,
+            "shadow_price": bwk_policy.lambda_price if bwk_policy is not None else None,
         })
 
     def eligible_indices() -> List[int]:
@@ -258,20 +269,46 @@ def run_global_anytime_sc(
                 best.append(i)
         return rng.choice(best) if best else -1
 
+    def pick_bwk(idx_list: List[int]) -> int:
+        if not idx_list or bwk_policy is None:
+            return -1
+        total_samples = sum(s["n_samples"] for s in states)
+        avg_cost = (total_tokens_consumed / total_samples) if total_samples > 0 else target_tokens
+        best = []
+        best_score = None
+        for i in idx_list:
+            state = states[i]
+            counts = state["counts"]
+            total = sum(counts.values())
+            if total == 0:
+                p_correct = 0.5
+            else:
+                top1 = max(counts.values())
+                p_correct = top1 / total
+            cost = (state["total_tokens"] / state["n_samples"]) if state["n_samples"] > 0 else avg_cost
+            normalized_cost = cost / max(1.0, target_tokens)
+            score = bwk_policy.score(p_correct, normalized_cost)
+            if best_score is None or score > best_score:
+                best_score = score
+                best = [i]
+            elif score == best_score:
+                best.append(i)
+        return rng.choice(best) if best else -1
+
     # Initial samples
     for ex_idx in range(len(examples)):
         for k in range(init_k):
             if max_samples is not None and states[ex_idx]["n_samples"] >= max_samples:
                 break
             sample_once(ex_idx, states[ex_idx]["n_samples"])
-            if total_tokens_global >= global_budget_tokens:
+            if total_tokens_consumed >= global_budget_tokens:
                 stop = True
                 break
         if stop:
             break
 
     # Global allocation loop
-    while total_tokens_global < global_budget_tokens:
+    while total_tokens_consumed < global_budget_tokens:
         eligible = eligible_indices()
         if not eligible:
             break
@@ -287,12 +324,14 @@ def run_global_anytime_sc(
             pick = pick_voi(eligible)
         elif allocation_policy == "ucb":
             pick = pick_ucb(eligible, len(steps) + 1)
+        elif allocation_policy == "bwk":
+            pick = pick_bwk(eligible)
         else:
             pick = pick_uniform(eligible)
         if pick == -1:
             break
         sample_once(pick, states[pick]["n_samples"])
-        if total_tokens_global >= global_budget_tokens:
+        if total_tokens_consumed >= global_budget_tokens:
             break
 
     results = []
@@ -303,10 +342,12 @@ def run_global_anytime_sc(
         "min_samples": min(samples_per_item) if samples_per_item else 0,
         "max_samples": max(samples_per_item) if samples_per_item else 0,
         "gini": _gini(samples_per_item),
-        "total_tokens_global": total_tokens_global,
+        "total_tokens_global": total_tokens_consumed,
     }
     if allocation_policy == "per_example_budget":
         alloc_summary["per_example_budget_tokens"] = per_example_budget_tokens or int(global_budget_tokens / max(1, len(examples)))
+    if bwk_policy is not None:
+        alloc_summary["shadow_price_final"] = bwk_policy.lambda_price
 
     for ex_idx, ex in enumerate(examples):
         state = states[ex_idx]
@@ -359,7 +400,7 @@ def run_global_anytime_sc(
             "allocation": allocation_policy,
             "init_k": init_k,
             "max_samples_per_item": max_samples,
-            "global_tokens_used": total_tokens_global,
+            "global_tokens_used": total_tokens_consumed,
             "extra": {
                 "candidates": candidates,
                 "candidate_scores": state["candidate_scores"],

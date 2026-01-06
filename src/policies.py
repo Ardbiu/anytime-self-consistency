@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 import os
 from .utils import load_prompt_template
 
@@ -17,6 +18,28 @@ class Policy:
             self.template_content = load_prompt_template(self.prompt_template_path)
         else:
             self.template_content = "{question}" # Fallback
+
+class BwKShadowPricePolicy:
+    """
+    Primal-dual shadow pricing policy for Bandits with Knapsacks (BwK).
+    Based on Agrawal & Devanur (2014).
+    """
+
+    def __init__(self, lambda_init: float = 0.01, eta: float = 0.01) -> None:
+        self.lambda_price = float(lambda_init)
+        self.eta = float(eta)
+
+    def update_price(self, consumed_tokens: float, target_tokens: float) -> float:
+        """Update shadow price lambda based on resource consumption."""
+        if target_tokens <= 0:
+            return self.lambda_price
+        delta = float(consumed_tokens) - float(target_tokens)
+        self.lambda_price *= math.exp(self.eta * delta)
+        return self.lambda_price
+
+    def score(self, p_correct: float, normalized_cost: float) -> float:
+        """BwK index: P(correct) - lambda * normalized_cost."""
+        return float(p_correct) - self.lambda_price * float(normalized_cost)
 
 def make_prompt(policy: Policy, question: str) -> str:
     """Formats the prompt for the given question."""
