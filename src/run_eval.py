@@ -28,6 +28,8 @@ def run_eval(
     limit_override: int = None,
     seed_override: int = None,
     run_group: str = None,
+    shard_id: int = 0,
+    num_shards: int = 1,
 ) -> None:
     if "methods" not in config or not isinstance(config["methods"], list):
         raise ValueError("Config must include a list of methods.")
@@ -57,6 +59,12 @@ def run_eval(
     )
     if not data:
         return
+
+    # Sharding
+    if num_shards > 1:
+        total_examples = len(data)
+        data = data[shard_id::num_shards]
+        logger.info(f"Shard {shard_id}/{num_shards}: Process {len(data)}/{total_examples} examples.")
 
     model = ModelRunner(
         model_name=config["model_name"],
@@ -666,6 +674,8 @@ def main():
     parser.add_argument("--run_group", type=str, help="Run group identifier for multi-seed suites")
     parser.add_argument("--dataset", type=str, help="Override dataset name")
     parser.add_argument("--limit", type=int, help="Override dataset limit")
+    parser.add_argument("--shard_id", type=int, default=0, help="Shard index (0-based)")
+    parser.add_argument("--num_shards", type=int, default=1, help="Total number of shards")
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
@@ -677,6 +687,8 @@ def main():
         limit_override=args.limit,
         seed_override=args.seed,
         run_group=args.run_group,
+        shard_id=args.shard_id,
+        num_shards=args.num_shards,
     )
 
 if __name__ == "__main__":
