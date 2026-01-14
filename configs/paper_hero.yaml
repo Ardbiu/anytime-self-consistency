@@ -4,7 +4,7 @@ limit: null
 seed: 42
 
 model_name: "Qwen/Qwen2.5-7B-Instruct"
-max_new_tokens: 256
+max_new_tokens: 1024
 
 policies: ["direct", "cot"]
 
@@ -37,7 +37,7 @@ methods:
     policy: "cot"
     global_budget_tokens: [1000000, 2000000, 4000000]
     init_k: 2
-    allocation_policy: ["ucb", "voi", "per_example_budget"]
+    allocation_policy: ["ucb", "voi", "voc_anytime", "per_example_budget"]
     ucb_c: 1.0
 
 output_dir: "outputs/runs/"

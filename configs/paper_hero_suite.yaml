@@ -4,7 +4,7 @@ limit: null
 seed: 42
 
 model_name: "Qwen/Qwen2.5-7B-Instruct"
-max_new_tokens: 256
+max_new_tokens: 1024
 
 datasets: ["gsm8k", "gsm_plus", "hendrycks_math"]
 dataset_limits:
