@@ -140,6 +140,11 @@ def main():
         acc_vals = df["is_correct"].dropna().astype(float).tolist()
         tok_vals = df["total_tokens"].dropna().tolist()
         total_tokens_sum = df["total_tokens"].dropna().sum()
+        total_time_sum = df["time_s"].dropna().sum()
+        correct_count = float(df["is_correct"].sum())
+        tokens_per_correct = total_tokens_sum / correct_count if correct_count > 0 else np.nan
+        time_per_correct = total_time_sum / correct_count if correct_count > 0 else np.nan
+        accuracy_per_second = correct_count / total_time_sum if total_time_sum > 0 else np.nan
         acc_low, acc_high = bootstrap_ci(acc_vals, n_boot=args.bootstrap)
         tokens_low, tokens_high = bootstrap_ci(tok_vals, n_boot=args.bootstrap)
 
@@ -154,6 +159,8 @@ def main():
             "allocation": first.get("allocation"),
             "policy": first.get("policy"),
             "verifier_model_name": first.get("verifier_model_name"),
+            "verifier_max_new_tokens": first.get("verifier_max_new_tokens"),
+            "verifier_task": first.get("verifier_task"),
             "batched": first.get("batched"),
             "batch_size": first.get("batch_size"),
             "allow_unseeded_batch": first.get("allow_unseeded_batch"),
@@ -171,6 +178,11 @@ def main():
             "avg_tokens_ci_low": tokens_low,
             "avg_tokens_ci_high": tokens_high,
             "total_tokens_sum": total_tokens_sum,
+            "total_time_sum": total_time_sum,
+            "correct_count": correct_count,
+            "tokens_per_correct": tokens_per_correct,
+            "time_per_correct": time_per_correct,
+            "accuracy_per_second": accuracy_per_second,
             "avg_time_s": df["time_s"].mean(),
             "unique_candidate_frac": mean_unique_frac,
             "count": len(df),
@@ -192,6 +204,8 @@ def main():
                 "allocation": row.get("allocation"),
                 "policy": row.get("policy"),
                 "verifier_model_name": row.get("verifier_model_name"),
+                "verifier_max_new_tokens": row.get("verifier_max_new_tokens"),
+                "verifier_task": row.get("verifier_task"),
                 "batched": row.get("batched"),
                 "batch_size": row.get("batch_size"),
                 "allow_unseeded_batch": row.get("allow_unseeded_batch"),
@@ -215,11 +229,14 @@ def main():
     per_run_df = pd.DataFrame(per_run_records)
     per_run_cols = [
         "dataset", "method", "model_name", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
-        "verifier_model_name", "batched", "batch_size", "allow_unseeded_batch",
+        "verifier_model_name", "verifier_max_new_tokens", "verifier_task",
+        "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
         "accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "avg_tokens", "avg_tokens_ci_low", "avg_tokens_ci_high",
-        "total_tokens_sum", "unique_candidate_frac", "avg_time_s", "count", "run_id", "run_group", "seed"
+        "total_tokens_sum", "total_time_sum", "correct_count", "tokens_per_correct",
+        "time_per_correct", "accuracy_per_second", "unique_candidate_frac",
+        "avg_time_s", "count", "run_id", "run_group", "seed"
     ]
     per_run_cols = [c for c in per_run_cols if c in per_run_df.columns]
     per_run_df = per_run_df[per_run_cols]
@@ -238,7 +255,8 @@ def main():
 
     group_cols = [
         "run_group", "dataset", "model_name", "method", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
-        "verifier_model_name", "batched", "batch_size", "allow_unseeded_batch",
+        "verifier_model_name", "verifier_max_new_tokens", "verifier_task",
+        "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c"
     ]
     grouped_records = []
@@ -253,13 +271,19 @@ def main():
         seed_tokens = seed_stats["tokens_mean"].dropna().tolist()
         seed_times = seed_stats["time_mean"].dropna().tolist()
         seed_unique = seed_stats["unique_mean"].dropna().tolist()
-        seed_total_tokens = gdf.groupby("seed")["total_tokens"].sum().dropna().tolist()
+        seed_total_tokens = gdf.groupby("seed")["total_tokens"].sum()
+        seed_total_times = gdf.groupby("seed")["time_s"].sum()
+        seed_correct = gdf.groupby("seed")["is_correct"].sum()
+        seed_tokens_per_correct = (seed_total_tokens / seed_correct.replace(0, np.nan)).dropna().tolist()
+        seed_time_per_correct = (seed_total_times / seed_correct.replace(0, np.nan)).dropna().tolist()
+        seed_accuracy_per_second = (seed_correct / seed_total_times.replace(0, np.nan)).dropna().tolist()
+        seed_total_tokens_list = seed_total_tokens.dropna().tolist()
 
         acc_low, acc_high = bootstrap_ci(gdf["is_correct"].dropna().astype(float).tolist(), n_boot=args.bootstrap)
         tok_low, tok_high = bootstrap_ci(gdf["total_tokens"].dropna().tolist(), n_boot=args.bootstrap)
         time_low, time_high = bootstrap_ci(gdf["time_s"].dropna().tolist(), n_boot=args.bootstrap)
         uniq_low, uniq_high = bootstrap_ci(gdf["unique_candidate_frac"].dropna().tolist(), n_boot=args.bootstrap)
-        sum_low, sum_high = bootstrap_ci(seed_total_tokens, n_boot=args.bootstrap)
+        sum_low, sum_high = bootstrap_ci(seed_total_tokens_list, n_boot=args.bootstrap)
 
         record = dict(zip(group_cols, keys))
         record.update({
@@ -276,13 +300,19 @@ def main():
             "std_avg_time_s": float(np.std(seed_times, ddof=1)) if len(seed_times) > 1 else 0.0,
             "time_ci_low": time_low,
             "time_ci_high": time_high,
-            "mean_total_tokens_sum": float(np.mean(seed_total_tokens)) if seed_total_tokens else np.nan,
-            "std_total_tokens_sum": float(np.std(seed_total_tokens, ddof=1)) if len(seed_total_tokens) > 1 else 0.0,
+            "mean_total_tokens_sum": float(np.mean(seed_total_tokens_list)) if seed_total_tokens_list else np.nan,
+            "std_total_tokens_sum": float(np.std(seed_total_tokens_list, ddof=1)) if len(seed_total_tokens_list) > 1 else 0.0,
             "total_tokens_sum_ci_low": sum_low,
             "total_tokens_sum_ci_high": sum_high,
             "mean_unique_candidate_frac": float(np.mean(seed_unique)) if seed_unique else np.nan,
             "unique_candidate_frac_ci_low": uniq_low,
             "unique_candidate_frac_ci_high": uniq_high,
+            "mean_tokens_per_correct": float(np.mean(seed_tokens_per_correct)) if seed_tokens_per_correct else np.nan,
+            "std_tokens_per_correct": float(np.std(seed_tokens_per_correct, ddof=1)) if len(seed_tokens_per_correct) > 1 else 0.0,
+            "mean_time_per_correct": float(np.mean(seed_time_per_correct)) if seed_time_per_correct else np.nan,
+            "std_time_per_correct": float(np.std(seed_time_per_correct, ddof=1)) if len(seed_time_per_correct) > 1 else 0.0,
+            "mean_accuracy_per_second": float(np.mean(seed_accuracy_per_second)) if seed_accuracy_per_second else np.nan,
+            "std_accuracy_per_second": float(np.std(seed_accuracy_per_second, ddof=1)) if len(seed_accuracy_per_second) > 1 else 0.0,
             "count": len(gdf),
         })
         grouped_records.append(record)
@@ -290,13 +320,17 @@ def main():
     grouped_summary_df = pd.DataFrame(grouped_records)
     grouped_cols = [
         "run_group", "dataset", "method", "model_name", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
-        "verifier_model_name", "batched", "batch_size", "allow_unseeded_batch",
+        "verifier_model_name", "verifier_max_new_tokens", "verifier_task",
+        "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
         "mean_accuracy", "std_accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "mean_avg_tokens", "std_avg_tokens", "tokens_ci_low", "tokens_ci_high",
         "mean_avg_time_s", "std_avg_time_s", "time_ci_low", "time_ci_high",
         "mean_total_tokens_sum", "std_total_tokens_sum", "total_tokens_sum_ci_low", "total_tokens_sum_ci_high",
         "mean_unique_candidate_frac", "unique_candidate_frac_ci_low", "unique_candidate_frac_ci_high",
+        "mean_tokens_per_correct", "std_tokens_per_correct",
+        "mean_time_per_correct", "std_time_per_correct",
+        "mean_accuracy_per_second", "std_accuracy_per_second",
         "seed_count", "count"
     ]
     grouped_cols = [c for c in grouped_cols if c in grouped_summary_df.columns]

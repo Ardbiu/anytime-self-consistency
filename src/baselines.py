@@ -3,7 +3,7 @@ from .models import ModelRunner
 from .policies import Policy, make_prompt
 from .scoring import extract_final_answer, normalize_answer_for_candidates, correctness_from_target, compare_answer_values, score_candidate, build_verifier_prompt
 
-def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
+def run_greedy(model: ModelRunner, policy: Policy, example: dict, seed: int = 42) -> dict:
     """Run single greedy sample (or near greedy)."""
     if policy is None:
         prompt = example['question']
@@ -15,7 +15,7 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
     res = model.generate(
         prompt,
         do_sample=False,
-        seed=42
+        seed=seed
     )
     
     pred_text = res['text']
@@ -38,7 +38,15 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict) -> dict:
         "extra": {"full_text": pred_text}
     }
 
-def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: int, seed: int = 42, batched: bool = False) -> dict:
+def run_self_consistency(
+    model: ModelRunner,
+    policy: Policy,
+    example: dict,
+    n: int,
+    seed: int = 42,
+    batched: bool = False,
+    batched_seeded: bool = False,
+) -> dict:
     """Run Self-Consistency with Majority Vote.
     
     Args:
@@ -55,13 +63,14 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
     if batched and hasattr(model, 'generate_batch'):
         # Batched generation for throughput
         prompts = [prompt] * n
+        seeds = [seed + i for i in range(n)] if batched_seeded else None
         results = model.generate_batch(
             prompts,
             temperature=getattr(policy, 'temperature', 0.7),
             top_p=getattr(policy, 'top_p', 1.0),
             top_k=getattr(policy, 'top_k', 50),
             do_sample=True,
-            seeds=None,  # No seeds for true batching
+            seeds=seeds,  # None enables true batching
         )
         for res in results:
             total_prompt_tokens += res['prompt_tokens']
@@ -126,7 +135,15 @@ def run_self_consistency(model: ModelRunner, policy: Policy, example: dict, n: i
         }
     }
 
-def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, seed: int = 42, batched: bool = False) -> dict:
+def run_best_of_n(
+    model: ModelRunner,
+    policy: Policy,
+    example: dict,
+    n: int,
+    seed: int = 42,
+    batched: bool = False,
+    batched_seeded: bool = False,
+) -> dict:
     """Run Best-of-N using a heuristic scorer.
     
     Args:
@@ -147,13 +164,14 @@ def run_best_of_n(model: ModelRunner, policy: Policy, example: dict, n: int, see
     if batched and hasattr(model, 'generate_batch'):
         # Batched generation
         prompts = [prompt] * n
+        seeds = [seed + i for i in range(n)] if batched_seeded else None
         results = model.generate_batch(
             prompts,
             temperature=getattr(policy, 'temperature', 0.7),
             top_p=getattr(policy, 'top_p', 1.0),
             top_k=getattr(policy, 'top_k', 50),
             do_sample=True,
-            seeds=None,
+            seeds=seeds,
         )
         for res in results:
             total_prompt_tokens += res['prompt_tokens']
@@ -226,7 +244,8 @@ def run_best_of_n_verifier(
     n: int,
     verifier: ModelRunner,
     seed: int = 42,
-    batched: bool = False
+    batched: bool = False,
+    batched_seeded: bool = False,
 ) -> dict:
     """Run Best-of-N using a learned verifier score (yes/no)."""
     prompt = make_prompt(policy, example["question"])
@@ -241,13 +260,14 @@ def run_best_of_n_verifier(
 
     if batched and hasattr(model, "generate_batch"):
         prompts = [prompt] * n
+        seeds = [seed + i for i in range(n)] if batched_seeded else None
         results = model.generate_batch(
             prompts,
             temperature=getattr(policy, "temperature", 0.7),
             top_p=getattr(policy, "top_p", 1.0),
             top_k=getattr(policy, "top_k", 50),
             do_sample=True,
-            seeds=None,
+            seeds=seeds,
         )
         for res in results:
             total_prompt_tokens += res["prompt_tokens"]
@@ -274,7 +294,7 @@ def run_best_of_n_verifier(
         ans_val = normalize_answer_for_candidates(ans_str)
         candidates.append(ans_val)
         verifier_prompt = build_verifier_prompt(example["question"], text, ans_str)
-        score = verifier.score_yes_no(verifier_prompt)
+        score = verifier.score_candidate(verifier_prompt)
         verifier_scores.append(score)
 
     best_idx = int(max(range(len(verifier_scores)), key=lambda i: verifier_scores[i]))

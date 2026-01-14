@@ -158,30 +158,42 @@ def run_global_anytime_sc(
             "shadow_price": bwk_policy.lambda_price if bwk_policy is not None else None,
         })
 
-    def eligible_indices() -> List[int]:
-        if max_samples is None:
-            base = list(range(len(examples)))
-        else:
-            base = [i for i, s in enumerate(states) if s["n_samples"] < max_samples]
+    def is_eligible(i: int) -> bool:
+        if max_samples is not None and states[i]["n_samples"] >= max_samples:
+            return False
         if allocation_policy == "per_example_budget":
             if per_example_budget_tokens is None:
-                target = max(1, int(global_budget_tokens / max(1, len(examples))))
+                target_per_ex = max(1, int(global_budget_tokens / max(1, len(examples))))
             else:
-                target = per_example_budget_tokens
-            return [i for i in base if states[i]["total_tokens"] < target]
-        return base
+                target_per_ex = per_example_budget_tokens
+            if states[i]["total_tokens"] >= target_per_ex:
+                return False
+        return True
 
     def pick_uniform(idx_list: List[int]) -> int:
         nonlocal allocation_idx
         if not idx_list:
             return -1
-        start = allocation_idx % len(examples)
-        for offset in range(len(examples)):
-            i = (start + offset) % len(examples)
-            if i in idx_list:
-                allocation_idx = i + 1
-                return i
-        return -1
+        # idx_list is sorted. We want the first i in idx_list such that i >= allocation_idx % len(examples)
+        # If none, we wrap around to idx_list[0].
+        # Since idx_list is sorted, we can just iterate or binary search.
+        # Linear scan is O(M), sufficient.
+        
+        threshold = allocation_idx % len(examples)
+        
+        # Fast path: prediction check
+        # verification: find first >= threshold
+        chosen = -1
+        for i in idx_list:
+            if i >= threshold:
+                chosen = i
+                break
+        
+        if chosen == -1:
+            chosen = idx_list[0]
+            
+        allocation_idx = chosen + 1
+        return chosen
 
     def pick_random(idx_list: List[int]) -> int:
         if not idx_list:
@@ -251,6 +263,34 @@ def run_global_anytime_sc(
                 best.append(i)
         return rng.choice(best) if best else -1
 
+    def pick_voc(idx_list: List[int]) -> int:
+        """
+        Value of computation heuristic:
+        prioritize items where an extra sample is most likely to change the vote.
+        """
+        best = []
+        best_score = None
+        for i in idx_list:
+            counts = states[i]["counts"]
+            total = sum(counts.values())
+            if total == 0:
+                score = 1.0
+            else:
+                sorted_counts = sorted(counts.values(), reverse=True)
+                top1 = sorted_counts[0]
+                top2 = sorted_counts[1] if len(sorted_counts) > 1 else 0
+                p1 = top1 / total
+                p2 = top2 / total
+                margin = max(0.0, p1 - p2)
+                variance = p1 * (1.0 - p1)
+                score = variance * (1.0 - margin)
+            if best_score is None or score > best_score:
+                best_score = score
+                best = [i]
+            elif score == best_score:
+                best.append(i)
+        return rng.choice(best) if best else -1
+
     def pick_ucb(idx_list: List[int], t: int) -> int:
         best = []
         best_score = None
@@ -296,11 +336,29 @@ def run_global_anytime_sc(
         return rng.choice(best) if best else -1
 
     # Initial samples
+    # We must maintain active_indices
+    active_indices = set()
+    for i in range(len(examples)):
+        if is_eligible(i):
+            active_indices.add(i)
+
     for ex_idx in range(len(examples)):
         for k in range(init_k):
-            if max_samples is not None and states[ex_idx]["n_samples"] >= max_samples:
+            # Check eligibility before sampling (in case init_k > max_samples)
+            if not is_eligible(ex_idx):
+                if ex_idx in active_indices:
+                    active_indices.remove(ex_idx)
                 break
+                
             sample_once(ex_idx, states[ex_idx]["n_samples"])
+            
+            # Post-sample check
+            if not is_eligible(ex_idx):
+                if ex_idx in active_indices:
+                    active_indices.remove(ex_idx)
+                # Break inner loop if this example is done
+                break
+                
             if total_tokens_consumed >= global_budget_tokens:
                 stop = True
                 break
@@ -309,9 +367,12 @@ def run_global_anytime_sc(
 
     # Global allocation loop
     while total_tokens_consumed < global_budget_tokens:
-        eligible = eligible_indices()
-        if not eligible:
+        if not active_indices:
             break
+            
+        # Convert to sorted list for pickers
+        eligible = sorted(list(active_indices))
+        
         if allocation_policy == "uniform":
             pick = pick_uniform(eligible)
         elif allocation_policy == "random":
@@ -322,15 +383,24 @@ def run_global_anytime_sc(
             pick = pick_uncertainty(eligible)
         elif allocation_policy in {"voi", "voi_lite", "value_of_information"}:
             pick = pick_voi(eligible)
+        elif allocation_policy in {"voc", "voc_anytime", "value_of_computation"}:
+            pick = pick_voc(eligible)
         elif allocation_policy == "ucb":
             pick = pick_ucb(eligible, len(steps) + 1)
         elif allocation_policy == "bwk":
             pick = pick_bwk(eligible)
         else:
             pick = pick_uniform(eligible)
+            
         if pick == -1:
             break
+            
         sample_once(pick, states[pick]["n_samples"])
+        
+        # Update eligibility
+        if not is_eligible(pick):
+            active_indices.remove(pick)
+            
         if total_tokens_consumed >= global_budget_tokens:
             break
 

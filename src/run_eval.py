@@ -105,6 +105,8 @@ def run_eval(
             "seed": seed,
             "model_name": config.get("model_name"),
             "max_new_tokens": config.get("max_new_tokens", 512),
+            "use_flash_attention": config.get("use_flash_attention", False),
+            "use_compile": config.get("use_compile", False),
             "method": method_name,
             "policy": _policy_name(run_cfg.get("policy")),
             "policy_name": run_cfg.get("policy_name"),
@@ -127,7 +129,12 @@ def run_eval(
             "batch_size": run_cfg.get("batch_size"),
             "allow_unseeded_batch": run_cfg.get("allow_unseeded_batch"),
             "batched": run_cfg.get("batched"),
+            "batched_seeded": run_cfg.get("batched_seeded"),
             "verifier_model_name": run_cfg.get("verifier_model_name"),
+            "verifier_max_new_tokens": run_cfg.get("verifier_max_new_tokens"),
+            "verifier_task": run_cfg.get("verifier_task"),
+            "verifier_use_flash_attention": run_cfg.get("verifier_use_flash_attention"),
+            "verifier_use_compile": run_cfg.get("verifier_use_compile"),
         }
         data = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(data).hexdigest()[:12]
@@ -215,8 +222,10 @@ def run_eval(
             configs = build_fixed_n_configs(method_cfg, policy_name, single_policy, "self_consistency")
             # Add batched flag to all configs
             batched = method_cfg.get("batched", False)
+            batched_seeded = method_cfg.get("batched_seeded", False)
             for cfg in configs:
                 cfg["batched"] = batched
+                cfg["batched_seeded"] = batched_seeded
         elif m_name == "best_of_n":
             policy_name, single_policy = resolve_single_policy()
             if not single_policy:
@@ -224,8 +233,10 @@ def run_eval(
             configs = build_fixed_n_configs(method_cfg, policy_name, single_policy, "best_of_n")
             # Add batched flag to all configs
             batched = method_cfg.get("batched", False)
+            batched_seeded = method_cfg.get("batched_seeded", False)
             for cfg in configs:
                 cfg["batched"] = batched
+                cfg["batched_seeded"] = batched_seeded
         elif m_name == "best_of_n_verifier":
             if "n_values" not in method_cfg:
                 raise ValueError("best_of_n_verifier requires n_values.")
@@ -235,20 +246,32 @@ def run_eval(
             verifier_model_name = method_cfg.get("verifier_model_name")
             if not verifier_model_name:
                 raise ValueError("best_of_n_verifier requires verifier_model_name.")
+            verifier_task = method_cfg.get("verifier_task", "yes_no")
             verifier_max_new_tokens = int(method_cfg.get("verifier_max_new_tokens", 8))
+            verifier_use_flash_attention = bool(method_cfg.get("verifier_use_flash_attention", config.get("use_flash_attention", False)))
+            verifier_use_compile = bool(method_cfg.get("verifier_use_compile", config.get("use_compile", False)))
             verifier_model = ModelRunner(
                 model_name=verifier_model_name,
                 dtype="float16" if "gpu" in str(config).lower() else "auto",
                 max_new_tokens=verifier_max_new_tokens,
+                use_flash_attention=verifier_use_flash_attention,
+                use_compile=verifier_use_compile,
+                task=verifier_task,
             )
             batched = method_cfg.get("batched", False)
+            batched_seeded = method_cfg.get("batched_seeded", False)
             configs = [
                 {
                     "n": n,
                     "policy": single_policy,
                     "policy_name": policy_name,
                     "verifier_model_name": verifier_model_name,
+                    "verifier_max_new_tokens": verifier_max_new_tokens,
+                    "verifier_task": verifier_task,
+                    "verifier_use_flash_attention": verifier_use_flash_attention,
+                    "verifier_use_compile": verifier_use_compile,
                     "batched": batched,
+                    "batched_seeded": batched_seeded,
                 }
                 for n in method_cfg["n_values"]
             ]
@@ -498,11 +521,27 @@ def run_eval(
                                 continue
                             # Dispatch
                             if m_name == "greedy":
-                                res = run_greedy(model, run_cfg["policy"], example)
+                                res = run_greedy(model, run_cfg["policy"], example, seed=seed)
                             elif m_name == "self_consistency":
-                                res = run_self_consistency(model, run_cfg["policy"], example, run_cfg["n"], batched=run_cfg.get("batched", False))
+                                res = run_self_consistency(
+                                    model,
+                                    run_cfg["policy"],
+                                    example,
+                                    run_cfg["n"],
+                                    seed=seed,
+                                    batched=run_cfg.get("batched", False),
+                                    batched_seeded=run_cfg.get("batched_seeded", False),
+                                )
                             elif m_name == "best_of_n":
-                                res = run_best_of_n(model, run_cfg["policy"], example, run_cfg["n"], batched=run_cfg.get("batched", False))
+                                res = run_best_of_n(
+                                    model,
+                                    run_cfg["policy"],
+                                    example,
+                                    run_cfg["n"],
+                                    seed=seed,
+                                    batched=run_cfg.get("batched", False),
+                                    batched_seeded=run_cfg.get("batched_seeded", False),
+                                )
                             elif m_name == "best_of_n_verifier":
                                 res = run_best_of_n_verifier(
                                     model,
@@ -510,7 +549,9 @@ def run_eval(
                                     example,
                                     run_cfg["n"],
                                     verifier_model,
+                                    seed=seed,
                                     batched=run_cfg.get("batched", False),
+                                    batched_seeded=run_cfg.get("batched_seeded", False),
                                 )
                             elif m_name == "self_consistency_early_stop":
                                 res = run_self_consistency_early_stop(
@@ -518,6 +559,7 @@ def run_eval(
                                     run_cfg["policy"],
                                     example,
                                     run_cfg["n"],
+                                    seed=seed,
                                     stop_ratio=run_cfg["stop_ratio"],
                                     stop_count=run_cfg["stop_count"],
                                     min_samples=run_cfg["min_samples"],
@@ -528,6 +570,7 @@ def run_eval(
                                     run_cfg["policy"],
                                     example,
                                     run_cfg["n"],
+                                    seed=seed,
                                     score_threshold=run_cfg["score_threshold"],
                                     min_samples=run_cfg["min_samples"],
                                 )
@@ -539,6 +582,7 @@ def run_eval(
                                     run_cfg["budget"],
                                     run_cfg["delta"],
                                     run_cfg["allocation"],
+                                    seed=seed,
                                     batch_size=run_cfg["batch_size"],
                                     allow_unseeded_batch=run_cfg["allow_unseeded_batch"],
                                 )
@@ -560,12 +604,22 @@ def run_eval(
                                 res["tokens_per_sample"] = run_cfg["tokens_per_sample"]
                             if run_cfg.get("verifier_model_name") is not None:
                                 res["verifier_model_name"] = run_cfg["verifier_model_name"]
+                            if run_cfg.get("verifier_max_new_tokens") is not None:
+                                res["verifier_max_new_tokens"] = run_cfg["verifier_max_new_tokens"]
+                            if run_cfg.get("verifier_task") is not None:
+                                res["verifier_task"] = run_cfg["verifier_task"]
+                            if run_cfg.get("verifier_use_flash_attention") is not None:
+                                res["verifier_use_flash_attention"] = run_cfg["verifier_use_flash_attention"]
+                            if run_cfg.get("verifier_use_compile") is not None:
+                                res["verifier_use_compile"] = run_cfg["verifier_use_compile"]
                             if run_cfg.get("batch_size") is not None:
                                 res["batch_size"] = run_cfg["batch_size"]
                             if run_cfg.get("allow_unseeded_batch") is not None:
                                 res["allow_unseeded_batch"] = run_cfg["allow_unseeded_batch"]
                             if run_cfg.get("batched") is not None:
                                 res["batched"] = run_cfg["batched"]
+                            if run_cfg.get("batched_seeded") is not None:
+                                res["batched_seeded"] = run_cfg["batched_seeded"]
 
                             # Ensure fields exist
                             if "is_correct" not in res:

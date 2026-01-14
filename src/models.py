@@ -1,6 +1,6 @@
 import torch
 import time
-from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, GenerationConfig
 from .utils import setup_logging
 
 logger = setup_logging(__name__)
@@ -15,9 +15,12 @@ class ModelRunner:
         trust_remote_code: bool = False,
         use_flash_attention: bool = False,
         use_compile: bool = False,
+        task: str = "generate",
     ):
         self.model_name = model_name
         self.max_new_tokens = max_new_tokens
+        self.task = (task or "generate").lower()
+        self.is_reward_model = self.task in {"reward", "sequence_classification", "classifier"}
         
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -57,7 +60,10 @@ class ModelRunner:
                 except Exception as e:
                     logger.warning(f"Flash Attention 2 not available: {e}")
             
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
+            if self.is_reward_model:
+                self.model = AutoModelForSequenceClassification.from_pretrained(model_name, **model_kwargs)
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
             
             if self.device == "cpu" or self.device == "mps":
                 self.model.to(self.device)
@@ -83,6 +89,8 @@ class ModelRunner:
         """
         Generates text and returns stats.
         """
+        if self.is_reward_model:
+            raise ValueError("generate() is not supported for reward/classifier models.")
         if seed is not None:
             torch.manual_seed(seed)
             if torch.cuda.is_available():
@@ -176,6 +184,8 @@ class ModelRunner:
         the batch since torch doesn't support per-sequence seeds in batched mode.
         For maximum throughput without exact reproducibility, pass seeds=None.
         """
+        if self.is_reward_model:
+            raise ValueError("generate_batch() is not supported for reward/classifier models.")
         if not prompts:
             return []
         
@@ -266,6 +276,8 @@ class ModelRunner:
         Returns P(yes) based on next-token logits for a yes/no verifier prompt.
         Uses first token of each label if multi-token.
         """
+        if self.is_reward_model:
+            return self.score_reward(prompt)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         with torch.no_grad():
             outputs = self.model(**inputs)
@@ -281,3 +293,24 @@ class ModelRunner:
         p_no = probs[0, no_id].item()
         denom = p_yes + p_no
         return p_yes / denom if denom > 0 else 0.5
+
+    def score_reward(self, prompt: str) -> float:
+        """
+        Returns a scalar reward/logit for a reward or classifier model.
+        Higher is better.
+        """
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True).to(self.device)
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            logits = outputs.logits
+        if logits.ndim == 2 and logits.shape[1] == 1:
+            return logits[0, 0].item()
+        return logits[0, -1].item()
+
+    def score_candidate(self, prompt: str) -> float:
+        """
+        Unified scorer for verifier models (yes/no or reward).
+        """
+        if self.is_reward_model:
+            return self.score_reward(prompt)
+        return self.score_yes_no(prompt)
