@@ -5,7 +5,13 @@ import numpy as np
 
 from .models import ModelRunner
 from .policies import Policy, make_prompt, BwKShadowPricePolicy
-from .scoring import extract_final_answer, normalize_answer_for_candidates, compare_answer_values, score_candidate
+from .scoring import (
+    get_answer_type,
+    extract_candidate_answer,
+    normalize_answer_for_candidates,
+    evaluate_prediction,
+    score_candidate,
+)
 
 def _gini(values: List[int]) -> float:
     if not values:
@@ -81,6 +87,7 @@ def run_global_anytime_sc(
     for _ in examples:
         states.append({
             "candidates": [],
+            "candidate_texts": [],
             "candidate_scores": [],
             "counts": collections.Counter(),
             "prompt_tokens": 0,
@@ -124,11 +131,34 @@ def run_global_anytime_sc(
         state["time_s"] += res["time_s"]
         state["n_samples"] += 1
 
-        ans_str = extract_final_answer(res["text"])
-        ans_val = normalize_answer_for_candidates(ans_str)
+        ex = examples[ex_idx]
+        answer_type = get_answer_type(ex)
+        choices = ex.get("choices")
+        choice_labels = ex.get("choice_labels")
+        candidate_text = extract_candidate_answer(
+            res["text"],
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        ans_val = normalize_answer_for_candidates(
+            candidate_text,
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
         state["candidates"].append(ans_val)
+        state["candidate_texts"].append(res["text"])
         if finalize == "best_of":
-            state["candidate_scores"].append(score_candidate(res["text"]))
+            state["candidate_scores"].append(
+                score_candidate(
+                    res["text"],
+                    answer_type=answer_type,
+                    example=ex,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+            )
         else:
             state["candidate_scores"].append(None)
         if ans_val is not None:
@@ -424,23 +454,36 @@ def run_global_anytime_sc(
         candidates = state["candidates"]
         valid = [c for c in candidates if c is not None]
         unique_frac = len(set(valid)) / len(candidates) if candidates else 0.0
+        pred = None
+        pred_text = None
         if finalize == "best_of" and state["candidate_scores"]:
             scored = [
-                (score, val)
-                for score, val in zip(state["candidate_scores"], candidates)
+                (score, val, idx)
+                for idx, (score, val) in enumerate(zip(state["candidate_scores"], candidates))
                 if score is not None
             ]
             if scored:
-                best_score, best_val = max(scored, key=lambda x: x[0])
+                _, best_val, best_idx = max(scored, key=lambda x: x[0])
                 pred = best_val
+                if best_idx < len(state["candidate_texts"]):
+                    pred_text = state["candidate_texts"][best_idx]
             else:
                 pred = _majority_vote(candidates)
         else:
             pred = _majority_vote(candidates)
 
+        if pred_text is None and pred is not None:
+            for idx, val in enumerate(candidates):
+                if val == pred:
+                    if idx < len(state["candidate_texts"]):
+                        pred_text = state["candidate_texts"][idx]
+                    break
+            if pred_text is None and state["candidate_texts"]:
+                pred_text = state["candidate_texts"][-1]
+
         is_correct = False
         if pred is not None:
-            is_correct = compare_answer_values(pred, ex.get("target"))
+            is_correct = evaluate_prediction(pred_text or "", pred, ex)
 
         counts = state["counts"]
         total_valid = sum(counts.values())

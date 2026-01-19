@@ -1,0 +1,24 @@
+dataset: "humaneval"
+split: "test"
+limit: 20
+seed: 42
+model_name: "Qwen/Qwen2.5-Coder-0.5B-Instruct"
+max_new_tokens: 256
+
+policies: ["raw"]
+
+methods:
+  - name: "greedy"
+    policy: "raw"
+
+  - name: "best_of_n"
+    policy: "raw"
+    n_values: [3]
+
+  - name: "anytime_sc"
+    policies: ["raw"]
+    budgets: [512]
+    deltas: [0.1]
+    allocation: "uniform"
+
+output_dir: "outputs/runs/"

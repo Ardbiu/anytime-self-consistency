@@ -162,7 +162,9 @@ def run_eval(
             if not policy_name:
                 return None, None
             if policy_name in {"raw", "none", "question"}:
-                return "raw", None
+                policies = load_policies_from_config({"policies": ["raw"]}, root_dir)
+                raw_policy = policies[0] if policies else None
+                return "raw", raw_policy
             policies = load_policies_from_config({"policies": [policy_name]}, root_dir)
             if not policies:
                 raise ValueError(f"Unknown policy '{policy_name}' for method '{m_name}'.")
@@ -478,12 +480,15 @@ def run_eval(
                         res["finalize"] = run_cfg["finalize"]
                         if "target" not in res:
                             res["target"] = example_by_id.get(res.get("example_id"), {}).get("target")
-                        if "parse_error" not in res or "subject" not in res:
-                            ex = example_by_id.get(res.get("example_id"), {})
-                            if "parse_error" not in res:
-                                res["parse_error"] = ex.get("parse_error", False)
-                            if "subject" not in res and "subject" in ex:
-                                res["subject"] = ex.get("subject")
+                        ex = example_by_id.get(res.get("example_id"), {})
+                        if "parse_error" not in res:
+                            res["parse_error"] = ex.get("parse_error", False)
+                        if "subject" not in res and "subject" in ex:
+                            res["subject"] = ex.get("subject")
+                        if "answer_type" not in res and "answer_type" in ex:
+                            res["answer_type"] = ex.get("answer_type")
+                        if "code_task" not in res and "code_task" in ex:
+                            res["code_task"] = ex.get("code_task")
 
                         f_out.write(json.dumps(res) + "\n")
                     f_out.flush()
@@ -638,6 +643,10 @@ def run_eval(
                                 res["parse_error"] = example.get("parse_error", False)
                             if "subject" not in res and "subject" in example:
                                 res["subject"] = example.get("subject")
+                            if "answer_type" not in res and "answer_type" in example:
+                                res["answer_type"] = example.get("answer_type")
+                            if "code_task" not in res and "code_task" in example:
+                                res["code_task"] = example.get("code_task")
 
                             f_out.write(json.dumps(res) + "\n")
                             f_out.flush() # Ensure safety

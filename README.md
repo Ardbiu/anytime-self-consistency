@@ -79,6 +79,21 @@ New compute-aware metrics in `outputs/summaries/summary_grouped.csv`:
 - `tokens_per_correct`: Total tokens used divided by number of correct answers.
 - `time_per_correct`: Total wall-clock time divided by number of correct answers.
 - `accuracy_per_second`: Correct answers per second of generation time.
+
+## Additional datasets (breadth)
+Supported datasets beyond GSM8K/MATH:
+- `arc_challenge` (ARC-Challenge multiple choice)
+- `mmlu:<subject>` (e.g. `mmlu:abstract_algebra`)
+- `humaneval` (code generation)
+- `mbpp` (code generation)
+
+Smoke configs are provided in:
+- `configs/arc_challenge_smoke.yaml`
+- `configs/mmlu_smoke.yaml`
+- `configs/humaneval_smoke.yaml`
+- `configs/mbpp_smoke.yaml`
+
+Note: code-task evaluation executes candidate code in a subprocess; run these in a sandboxed environment.
 -
 -## Running clean experiments without mixing runs
 -
@@ -132,6 +147,9 @@ New compute-aware metrics in `outputs/summaries/summary_grouped.csv`:
 -
 -# GSM8K full + GSM-Plus (limited) with the same hero methods
 -python scripts/run_suite.py --config configs/paper_hero_suite.yaml --seeds 0,1 --datasets gsm8k,gsm_plus --run_group hero_suite
+-
+-# 5-seed hero suite (paper-grade stability)
+-bash scripts/run_hero_5seed.sh
 -```
 -
 -### Model-agnostic and hard-benchmark runs
@@ -197,6 +215,9 @@ New compute-aware metrics in `outputs/summaries/summary_grouped.csv`:
 -
 -# Accuracy vs wall-clock time (grouped)
 -python scripts/plot_pareto.py --latest_group --grouped --x_metric time
+-
+-# Pareto dominance report (checks frontier coverage)
+-python scripts/pareto_dominance.py --latest_group --summary_output outputs/summaries/pareto_summary.csv
 -
 -# Error analysis breakdowns
 -python scripts/error_analysis.py --latest_group

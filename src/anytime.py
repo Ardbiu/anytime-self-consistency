@@ -3,7 +3,12 @@ import collections
 import numpy as np
 from .models import ModelRunner
 from .policies import Policy, make_prompt
-from .scoring import extract_final_answer, normalize_answer_for_candidates, compare_answer_values
+from .scoring import (
+    get_answer_type,
+    extract_candidate_answer,
+    normalize_answer_for_candidates,
+    evaluate_prediction,
+)
 
 def run_anytime_sc(
     model: ModelRunner, 
@@ -38,6 +43,7 @@ def run_anytime_sc(
     # We'll use a string repr for keys, but value for checking.
     answer_counts = collections.defaultdict(int)
     answer_to_val = {}
+    answer_to_text = {}
     
     steps = []
     
@@ -48,7 +54,12 @@ def run_anytime_sc(
     batch_id = 0
     stop_triggered = False
     final_pred = None
+    final_pred_text = None
     
+    answer_type = get_answer_type(example)
+    choices = example.get("choices")
+    choice_labels = example.get("choice_labels")
+
     while total_tokens < budget_tokens:
         batch_id += 1
 
@@ -124,13 +135,25 @@ def run_anytime_sc(
             total_tokens += res['total_tokens']
             total_time += res['time_s']
 
-            ans_str = extract_final_answer(res['text'])
-            ans_val = normalize_answer_for_candidates(ans_str)
+            candidate_text = extract_candidate_answer(
+                res["text"],
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            ans_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
 
             ans_key = str(ans_val)
             if ans_val is not None:
                 answer_counts[ans_key] += 1
                 answer_to_val[ans_key] = ans_val
+                if ans_key not in answer_to_text:
+                    answer_to_text[ans_key] = candidate_text
 
             policy_stats[policy.name]["nk"] += 1
 
@@ -175,15 +198,19 @@ def run_anytime_sc(
             if should_stop:
                 stop_triggered = True
                 final_pred = answer_to_val.get(leading_ans)
+                final_pred_text = answer_to_text.get(leading_ans)
                 break
             
     # If exhausted budget without stopping
     if final_pred is None and answer_counts:
-        final_pred = answer_to_val.get(max(answer_counts, key=answer_counts.get))
+        best_key = max(answer_counts, key=answer_counts.get)
+        final_pred = answer_to_val.get(best_key)
+        final_pred_text = answer_to_text.get(best_key)
         
     is_correct = False
     if final_pred is not None:
-         is_correct = compare_answer_values(final_pred, example.get("target"))
+        pred_text = final_pred_text or ""
+        is_correct = evaluate_prediction(pred_text, final_pred, example)
          
     # Calculate diversity
     # t is total samples taken

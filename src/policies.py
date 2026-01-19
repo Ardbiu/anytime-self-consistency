@@ -53,6 +53,7 @@ def load_policies_from_config(config: dict, root_dir: str = ".") -> list[Policy]
     # If it lists just names like ["direct", "cot"], we map them to defaults.
     
     known_policies = {
+        "raw": Policy("raw", f"{root_dir}/prompts/raw.txt", temperature=0.7),
         "direct": Policy("direct", f"{root_dir}/prompts/gsm8k_direct.txt", temperature=0.2), # Low temp for direct
         "cot": Policy("cot", f"{root_dir}/prompts/gsm8k_cot.txt", temperature=0.7),
         "decompose": Policy("decompose", f"{root_dir}/prompts/gsm8k_decompose.txt", temperature=0.7),

@@ -1,0 +1,24 @@
+dataset: "mmlu:abstract_algebra"
+split: "test"
+limit: 50
+seed: 42
+model_name: "Qwen/Qwen2.5-0.5B-Instruct"
+max_new_tokens: 128
+
+policies: ["direct"]
+
+methods:
+  - name: "greedy"
+    policy: "direct"
+
+  - name: "self_consistency"
+    policy: "direct"
+    n_values: [5]
+
+  - name: "anytime_sc"
+    policies: ["direct"]
+    budgets: [256]
+    deltas: [0.1]
+    allocation: "ucb"
+
+output_dir: "outputs/runs/"
