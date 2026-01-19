@@ -79,6 +79,9 @@ New compute-aware metrics in `outputs/summaries/summary_grouped.csv`:
 - `tokens_per_correct`: Total tokens used divided by number of correct answers.
 - `time_per_correct`: Total wall-clock time divided by number of correct answers.
 - `accuracy_per_second`: Correct answers per second of generation time.
+- `weighted_cost_per_correct`: Weighted cost per correct using prompt/completion weights.
+
+Anytime-SC can use weighted cost budgets by setting `prompt_cost` and `completion_cost` in the method config (budgets then represent weighted cost units).
 
 ## Additional datasets (breadth)
 Supported datasets beyond GSM8K/MATH:
@@ -126,8 +129,10 @@ Note: code-task evaluation executes candidate code in a subprocess; run these in
 -- `best_of_n_verifier`: requires `policy`/`prompt`, `n_values`, and `verifier_model_name` (optional `verifier_max_new_tokens`, `verifier_task` (yes_no or reward), `batched`, `batched_seeded`).
 -- `self_consistency_early_stop`: requires `policy`, `n_values`, and stopping params (`stop_ratio` or `stop_count`, plus `min_samples`).
 -- `best_of_n_early_stop`: requires `policy`, `n_values`, and `score_threshold` (+ optional `min_samples`).
--- `anytime_sc`: require `policies`, `budgets`, `deltas` (and optional `allocation` like `ucb` or `uniform`, plus `batch_size` and `allow_unseeded_batch` for batched sampling).
+-- `anytime_sc`: require `policies`, `budgets`, `deltas` (optional `allocation` like `ucb`, `ucb_window`, `ucb_discount`, `uniform`; plus `batch_size`, `allow_unseeded_batch`, `ucb_window`, `ucb_discount`, `prompt_cost`, `completion_cost`).
+-- `oracle_stopping`: require `policies`, `budgets` (optional `allocation`, `batch_size`, `allow_unseeded_batch`, `ucb_window`, `ucb_discount`, `prompt_cost`, `completion_cost`).
 -- `global_anytime_sc`: dataset-level global budget. Requires `policy`, `global_budget_tokens`, `init_k`, `allocation_policy`, and optional `max_samples_per_item`, `per_example_budget_tokens`, `ucb_c`, `store_allocation_steps`, `temperature`, `top_p`, `top_k`, `finalize`.
+-Available prompts include `direct`, `cot`, `cot_long` (verbose CoT for compute-equivalent greedy), and `decompose`.
 -
 -Output files are named as:
 -`{dataset}_{method}_{params}_{run_group}_seed{seed}_{run_id}.jsonl` (run_group omitted if not provided).
@@ -169,6 +174,8 @@ Note: code-task evaluation executes candidate code in a subprocess; run these in
 -You can also run the suite directly:
 -```bash
 -python scripts/run_suite.py --config configs/suite_smoke.yaml --seeds 0,1 --datasets gsm8k,gsm_plus
+-# Optional checkpointing to stop weak methods early (saves tokens)
+-python scripts/run_suite.py --config configs/suite_smoke.yaml --seeds 0,1 --datasets gsm8k,gsm_plus --checkpoint_examples 50 --checkpoint_degradation 0.2
 -python scripts/aggregate_results.py --latest_group --bootstrap 200
 -python scripts/plot_pareto.py --latest_group --grouped
 -python scripts/diagnose_sampling.py --latest_group
@@ -216,8 +223,15 @@ Note: code-task evaluation executes candidate code in a subprocess; run these in
 -# Accuracy vs wall-clock time (grouped)
 -python scripts/plot_pareto.py --latest_group --grouped --x_metric time
 -
+-# Weighted cost (prompt vs completion) ablation
+-python scripts/aggregate_results.py --latest_group --prompt_cost 0.1 --completion_cost 1.0
+-python scripts/plot_pareto.py --latest_group --grouped --x_metric weighted
+-
 -# Pareto dominance report (checks frontier coverage)
 -python scripts/pareto_dominance.py --latest_group --summary_output outputs/summaries/pareto_summary.csv
+-
+-# Confidence trajectory plots (entropy vs samples)
+-python scripts/plot_confidence_trajectory.py --latest_group --dataset gsm8k --method anytime_sc
 -
 -# Error analysis breakdowns
 -python scripts/error_analysis.py --latest_group
@@ -229,6 +243,10 @@ Note: code-task evaluation executes candidate code in a subprocess; run these in
 -python scripts/analyze_stopping_bounds.py --latest_group
 -```
 -This compares empirical error rates against Hoeffding bounds and outputs a pass/fail summary.
+-You can also emit a delta-risk plot:
+-```bash
+-python scripts/analyze_stopping_bounds.py --latest_group --output_plot outputs/plots/stopping_risk.png
+-```
 -
 -### Latency benchmarks
 -Compare serial vs batched inference to demonstrate wall-clock savings:

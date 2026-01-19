@@ -14,7 +14,7 @@ def main():
     parser.add_argument("--run_group", type=str, help="Specific run_group to plot")
     parser.add_argument("--latest_group", action="store_true", help="Plot only the latest run_group found in summary")
     parser.add_argument("--grouped", action="store_true", help="Plot grouped summary with CIs")
-    parser.add_argument("--x_metric", type=str, default="tokens", choices=["tokens", "time"], help="X-axis metric: tokens or time")
+    parser.add_argument("--x_metric", type=str, default="tokens", choices=["tokens", "time", "weighted"], help="X-axis metric: tokens, time, or weighted")
     args = parser.parse_args()
 
     default_grouped = "outputs/summaries/summary_grouped.csv"
@@ -84,6 +84,11 @@ def main():
         x_low_col = "time_ci_low" if args.grouped else None
         x_high_col = "time_ci_high" if args.grouped else None
         x_label = "Average Time per Example (s)"
+    elif args.x_metric == "weighted":
+        x_col = "mean_avg_weighted_cost" if args.grouped else "avg_weighted_cost"
+        x_low_col = "weighted_cost_ci_low" if args.grouped else "avg_weighted_cost_ci_low"
+        x_high_col = "weighted_cost_ci_high" if args.grouped else "avg_weighted_cost_ci_high"
+        x_label = "Average Weighted Cost per Example"
     else:
         x_col = "mean_avg_tokens" if args.grouped else "avg_tokens"
         x_low_col = "tokens_ci_low" if args.grouped else "avg_tokens_ci_low"

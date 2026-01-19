@@ -1,0 +1,3 @@
+Q: {question}
+A: Let's think step by step. Provide a detailed, multi-paragraph explanation (at least 300 words) before giving the final answer.
+Final:

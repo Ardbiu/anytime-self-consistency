@@ -66,6 +66,8 @@ def main():
     parser.add_argument("--run_group", type=str, help="Specific run_group to aggregate")
     parser.add_argument("--latest_group", action="store_true", help="Aggregate only the latest run_group found in input dir")
     parser.add_argument("--bootstrap", type=int, default=1000, help="Bootstrap samples for CI estimation")
+    parser.add_argument("--prompt_cost", type=float, default=1.0, help="Cost weight for prompt tokens")
+    parser.add_argument("--completion_cost", type=float, default=1.0, help="Cost weight for completion tokens")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -139,14 +141,30 @@ def main():
 
         acc_vals = df["is_correct"].dropna().astype(float).tolist()
         tok_vals = df["total_tokens"].dropna().tolist()
+        weighted_vals = []
+        if "prompt_tokens" in df.columns and "completion_tokens" in df.columns:
+            token_df = df[["prompt_tokens", "completion_tokens"]].dropna()
+            if not token_df.empty:
+                weighted_vals = (
+                    token_df["prompt_tokens"] * args.prompt_cost
+                    + token_df["completion_tokens"] * args.completion_cost
+                ).tolist()
         total_tokens_sum = df["total_tokens"].dropna().sum()
         total_time_sum = df["time_s"].dropna().sum()
+        prompt_tokens_sum = df["prompt_tokens"].dropna().sum() if "prompt_tokens" in df.columns else np.nan
+        completion_tokens_sum = df["completion_tokens"].dropna().sum() if "completion_tokens" in df.columns else np.nan
+        if np.isfinite(prompt_tokens_sum) and np.isfinite(completion_tokens_sum):
+            weighted_cost_sum = args.prompt_cost * prompt_tokens_sum + args.completion_cost * completion_tokens_sum
+        else:
+            weighted_cost_sum = np.nan
         correct_count = float(df["is_correct"].sum())
         tokens_per_correct = total_tokens_sum / correct_count if correct_count > 0 else np.nan
+        weighted_cost_per_correct = weighted_cost_sum / correct_count if correct_count > 0 else np.nan
         time_per_correct = total_time_sum / correct_count if correct_count > 0 else np.nan
         accuracy_per_second = correct_count / total_time_sum if total_time_sum > 0 else np.nan
         acc_low, acc_high = bootstrap_ci(acc_vals, n_boot=args.bootstrap)
         tokens_low, tokens_high = bootstrap_ci(tok_vals, n_boot=args.bootstrap)
+        weighted_low, weighted_high = bootstrap_ci(weighted_vals, n_boot=args.bootstrap) if weighted_vals else (np.nan, np.nan)
 
         per_run_records.append({
             "dataset": first.get("dataset"),
@@ -177,10 +195,15 @@ def main():
             "avg_tokens": df["total_tokens"].mean(),
             "avg_tokens_ci_low": tokens_low,
             "avg_tokens_ci_high": tokens_high,
+            "avg_weighted_cost": float(np.mean(weighted_vals)) if weighted_vals else np.nan,
+            "avg_weighted_cost_ci_low": weighted_low,
+            "avg_weighted_cost_ci_high": weighted_high,
             "total_tokens_sum": total_tokens_sum,
             "total_time_sum": total_time_sum,
             "correct_count": correct_count,
             "tokens_per_correct": tokens_per_correct,
+            "weighted_cost_sum": weighted_cost_sum,
+            "weighted_cost_per_correct": weighted_cost_per_correct,
             "time_per_correct": time_per_correct,
             "accuracy_per_second": accuracy_per_second,
             "avg_time_s": df["time_s"].mean(),
@@ -213,11 +236,15 @@ def main():
                 "max_samples_per_item": row.get("max_samples_per_item"),
                 "per_example_budget_tokens": row.get("per_example_budget_tokens"),
                 "ucb_c": row.get("ucb_c"),
+                "prompt_cost": row.get("prompt_cost"),
+                "completion_cost": row.get("completion_cost"),
                 "run_id": row.get("run_id"),
                 "run_group": row.get("run_group") or run_id,
                 "seed": row.get("seed", seed),
                 "is_correct": row.get("is_correct"),
                 "total_tokens": row.get("total_tokens"),
+                "prompt_tokens": row.get("prompt_tokens"),
+                "completion_tokens": row.get("completion_tokens"),
                 "time_s": row.get("time_s"),
                 "unique_candidate_frac": uf,
             })
@@ -232,9 +259,12 @@ def main():
         "verifier_model_name", "verifier_max_new_tokens", "verifier_task",
         "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
+        "prompt_cost", "completion_cost",
         "accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "avg_tokens", "avg_tokens_ci_low", "avg_tokens_ci_high",
+        "avg_weighted_cost", "avg_weighted_cost_ci_low", "avg_weighted_cost_ci_high",
         "total_tokens_sum", "total_time_sum", "correct_count", "tokens_per_correct",
+        "weighted_cost_sum", "weighted_cost_per_correct",
         "time_per_correct", "accuracy_per_second", "unique_candidate_frac",
         "avg_time_s", "count", "run_id", "run_group", "seed"
     ]
@@ -252,38 +282,53 @@ def main():
         return
 
     grouped_df["seed"] = grouped_df["seed"].fillna(-1)
+    if "prompt_tokens" in grouped_df.columns and "completion_tokens" in grouped_df.columns:
+        grouped_df["weighted_cost"] = (
+            grouped_df["prompt_tokens"].astype(float) * args.prompt_cost
+            + grouped_df["completion_tokens"].astype(float) * args.completion_cost
+        )
 
     group_cols = [
         "run_group", "dataset", "model_name", "method", "n", "budget", "global_budget_tokens", "delta", "allocation", "policy",
         "verifier_model_name", "verifier_max_new_tokens", "verifier_task",
         "batched", "batch_size", "allow_unseeded_batch",
-        "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c"
+        "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
+        "prompt_cost", "completion_cost"
     ]
     grouped_records = []
     for keys, gdf in grouped_df.groupby(group_cols, dropna=False):
-        seed_stats = gdf.groupby("seed").agg(
-            accuracy_mean=("is_correct", "mean"),
-            tokens_mean=("total_tokens", "mean"),
-            time_mean=("time_s", "mean"),
-            unique_mean=("unique_candidate_frac", "mean"),
-        )
+        agg_map = {
+            "accuracy_mean": ("is_correct", "mean"),
+            "tokens_mean": ("total_tokens", "mean"),
+            "time_mean": ("time_s", "mean"),
+            "unique_mean": ("unique_candidate_frac", "mean"),
+        }
+        if "weighted_cost" in gdf.columns:
+            agg_map["weighted_mean"] = ("weighted_cost", "mean")
+        seed_stats = gdf.groupby("seed").agg(**agg_map)
         seed_accs = seed_stats["accuracy_mean"].dropna().tolist()
         seed_tokens = seed_stats["tokens_mean"].dropna().tolist()
         seed_times = seed_stats["time_mean"].dropna().tolist()
         seed_unique = seed_stats["unique_mean"].dropna().tolist()
+        seed_weighted = seed_stats["weighted_mean"].dropna().tolist() if "weighted_mean" in seed_stats else []
         seed_total_tokens = gdf.groupby("seed")["total_tokens"].sum()
         seed_total_times = gdf.groupby("seed")["time_s"].sum()
+        seed_total_weighted = gdf.groupby("seed")["weighted_cost"].sum() if "weighted_cost" in gdf.columns else pd.Series(dtype=float)
         seed_correct = gdf.groupby("seed")["is_correct"].sum()
         seed_tokens_per_correct = (seed_total_tokens / seed_correct.replace(0, np.nan)).dropna().tolist()
+        seed_weighted_per_correct = (seed_total_weighted / seed_correct.replace(0, np.nan)).dropna().tolist()
         seed_time_per_correct = (seed_total_times / seed_correct.replace(0, np.nan)).dropna().tolist()
         seed_accuracy_per_second = (seed_correct / seed_total_times.replace(0, np.nan)).dropna().tolist()
         seed_total_tokens_list = seed_total_tokens.dropna().tolist()
+        seed_total_weighted_list = seed_total_weighted.dropna().tolist() if not seed_total_weighted.empty else []
 
         acc_low, acc_high = bootstrap_ci(gdf["is_correct"].dropna().astype(float).tolist(), n_boot=args.bootstrap)
         tok_low, tok_high = bootstrap_ci(gdf["total_tokens"].dropna().tolist(), n_boot=args.bootstrap)
+        weighted_low, weighted_high = bootstrap_ci(gdf["weighted_cost"].dropna().tolist(), n_boot=args.bootstrap) if "weighted_cost" in gdf.columns else (np.nan, np.nan)
         time_low, time_high = bootstrap_ci(gdf["time_s"].dropna().tolist(), n_boot=args.bootstrap)
         uniq_low, uniq_high = bootstrap_ci(gdf["unique_candidate_frac"].dropna().tolist(), n_boot=args.bootstrap)
         sum_low, sum_high = bootstrap_ci(seed_total_tokens_list, n_boot=args.bootstrap)
+        weighted_sum_low, weighted_sum_high = bootstrap_ci(seed_total_weighted_list, n_boot=args.bootstrap) if seed_total_weighted_list else (np.nan, np.nan)
 
         record = dict(zip(group_cols, keys))
         record.update({
@@ -296,6 +341,9 @@ def main():
             "std_avg_tokens": float(np.std(seed_tokens, ddof=1)) if len(seed_tokens) > 1 else 0.0,
             "tokens_ci_low": tok_low,
             "tokens_ci_high": tok_high,
+            "mean_avg_weighted_cost": float(np.mean(seed_weighted)) if seed_weighted else np.nan,
+            "weighted_cost_ci_low": weighted_low,
+            "weighted_cost_ci_high": weighted_high,
             "mean_avg_time_s": float(np.mean(seed_times)) if seed_times else np.nan,
             "std_avg_time_s": float(np.std(seed_times, ddof=1)) if len(seed_times) > 1 else 0.0,
             "time_ci_low": time_low,
@@ -304,11 +352,15 @@ def main():
             "std_total_tokens_sum": float(np.std(seed_total_tokens_list, ddof=1)) if len(seed_total_tokens_list) > 1 else 0.0,
             "total_tokens_sum_ci_low": sum_low,
             "total_tokens_sum_ci_high": sum_high,
+            "mean_total_weighted_cost_sum": float(np.mean(seed_total_weighted_list)) if seed_total_weighted_list else np.nan,
+            "total_weighted_cost_sum_ci_low": weighted_sum_low,
+            "total_weighted_cost_sum_ci_high": weighted_sum_high,
             "mean_unique_candidate_frac": float(np.mean(seed_unique)) if seed_unique else np.nan,
             "unique_candidate_frac_ci_low": uniq_low,
             "unique_candidate_frac_ci_high": uniq_high,
             "mean_tokens_per_correct": float(np.mean(seed_tokens_per_correct)) if seed_tokens_per_correct else np.nan,
             "std_tokens_per_correct": float(np.std(seed_tokens_per_correct, ddof=1)) if len(seed_tokens_per_correct) > 1 else 0.0,
+            "mean_weighted_cost_per_correct": float(np.mean(seed_weighted_per_correct)) if seed_weighted_per_correct else np.nan,
             "mean_time_per_correct": float(np.mean(seed_time_per_correct)) if seed_time_per_correct else np.nan,
             "std_time_per_correct": float(np.std(seed_time_per_correct, ddof=1)) if len(seed_time_per_correct) > 1 else 0.0,
             "mean_accuracy_per_second": float(np.mean(seed_accuracy_per_second)) if seed_accuracy_per_second else np.nan,
@@ -323,12 +375,16 @@ def main():
         "verifier_model_name", "verifier_max_new_tokens", "verifier_task",
         "batched", "batch_size", "allow_unseeded_batch",
         "init_k", "max_samples_per_item", "per_example_budget_tokens", "ucb_c",
+        "prompt_cost", "completion_cost",
         "mean_accuracy", "std_accuracy", "accuracy_ci_low", "accuracy_ci_high",
         "mean_avg_tokens", "std_avg_tokens", "tokens_ci_low", "tokens_ci_high",
+        "mean_avg_weighted_cost", "weighted_cost_ci_low", "weighted_cost_ci_high",
         "mean_avg_time_s", "std_avg_time_s", "time_ci_low", "time_ci_high",
         "mean_total_tokens_sum", "std_total_tokens_sum", "total_tokens_sum_ci_low", "total_tokens_sum_ci_high",
+        "mean_total_weighted_cost_sum", "total_weighted_cost_sum_ci_low", "total_weighted_cost_sum_ci_high",
         "mean_unique_candidate_frac", "unique_candidate_frac_ci_low", "unique_candidate_frac_ci_high",
         "mean_tokens_per_correct", "std_tokens_per_correct",
+        "mean_weighted_cost_per_correct",
         "mean_time_per_correct", "std_time_per_correct",
         "mean_accuracy_per_second", "std_accuracy_per_second",
         "seed_count", "count"

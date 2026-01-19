@@ -12,6 +12,10 @@ methods:
   - name: "greedy"
     policy: "direct"
 
+  - name: "greedy"
+    policy: "cot_long"
+    max_new_tokens: 1024
+
   - name: "self_consistency"
     policy: "cot"
     n_values: [10]
@@ -32,6 +36,11 @@ methods:
     allocation: "ucb"
     batch_size: 4
     allow_unseeded_batch: true
+
+  - name: "oracle_stopping"
+    policies: ["direct", "cot"]
+    budgets: [1024, 2048]
+    allocation: "ucb"
 
   - name: "global_anytime_sc"
     policy: "cot"

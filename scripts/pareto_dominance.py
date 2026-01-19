@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--run_group", type=str, help="Filter to a specific run_group")
     parser.add_argument("--latest", action="store_true", help="Filter to latest run_id if present")
     parser.add_argument("--run_id", type=str, help="Filter to a specific run_id")
-    parser.add_argument("--x_metric", type=str, default="tokens", choices=["tokens", "time"])
+    parser.add_argument("--x_metric", type=str, default="tokens", choices=["tokens", "time", "weighted"])
     args = parser.parse_args()
 
     default_grouped = "outputs/summaries/summary_grouped.csv"
@@ -65,6 +65,8 @@ def main():
 
     if args.x_metric == "time":
         x_col = "mean_avg_time_s" if "mean_avg_time_s" in df.columns else "avg_time_s"
+    elif args.x_metric == "weighted":
+        x_col = "mean_avg_weighted_cost" if "mean_avg_weighted_cost" in df.columns else "avg_weighted_cost"
     else:
         x_col = "mean_avg_tokens" if "mean_avg_tokens" in df.columns else "avg_tokens"
     y_col = "mean_accuracy" if "mean_accuracy" in df.columns else "accuracy"

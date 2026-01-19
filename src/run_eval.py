@@ -17,7 +17,7 @@ from .baselines import (
     run_self_consistency_early_stop,
     run_best_of_n_early_stop,
 )
-from .anytime import run_anytime_sc
+from .anytime import run_anytime_sc, run_oracle_stopping
 from .global_anytime import run_global_anytime_sc
 
 logger = setup_logging("run_eval")
@@ -45,6 +45,11 @@ def run_eval(
     run_group = run_group or config.get("run_group")
     cache_enabled = bool(config.get("cache_enabled", True))
     cache_path = config.get("cache_path") or "outputs/cache/cache.jsonl"
+    checkpoint_cfg = config.get("checkpoint") or {}
+    checkpoint_enabled = bool(checkpoint_cfg.get("enabled", False))
+    checkpoint_examples = int(checkpoint_cfg.get("examples", 0) or 0)
+    checkpoint_max_degradation = float(checkpoint_cfg.get("max_degradation", 0.2))
+    checkpoint_policy_name = checkpoint_cfg.get("policy")
 
     set_seed(seed)
     ensure_dir(config["output_dir"])
@@ -106,6 +111,18 @@ def run_eval(
             return "raw"
         return getattr(policy_obj, "name", "unknown")
 
+    def resolve_policy_from_name(policy_name):
+        if not policy_name:
+            return None, None
+        if policy_name in {"raw", "none", "question"}:
+            policies = load_policies_from_config({"policies": ["raw"]}, root_dir)
+            raw_policy = policies[0] if policies else None
+            return "raw", raw_policy
+        policies = load_policies_from_config({"policies": [policy_name]}, root_dir)
+        if not policies:
+            raise ValueError(f"Unknown policy '{policy_name}'.")
+        return policy_name, policies[0]
+
     def _params_hash(method_name, run_cfg):
         payload = {
             "dataset": dataset_name,
@@ -113,6 +130,7 @@ def run_eval(
             "seed": seed,
             "model_name": config.get("model_name"),
             "max_new_tokens": config.get("max_new_tokens", 512),
+            "method_max_new_tokens": run_cfg.get("max_new_tokens"),
             "use_flash_attention": config.get("use_flash_attention", False),
             "use_compile": config.get("use_compile", False),
             "method": method_name,
@@ -124,6 +142,8 @@ def run_eval(
             "budget_tokens": run_cfg.get("budget_tokens"),
             "delta": run_cfg.get("delta"),
             "allocation": run_cfg.get("allocation"),
+            "prompt_cost": run_cfg.get("prompt_cost"),
+            "completion_cost": run_cfg.get("completion_cost"),
             "global_budget_tokens": run_cfg.get("global_budget_tokens"),
             "allocation_policy": run_cfg.get("allocation_policy"),
             "init_k": run_cfg.get("init_k"),
@@ -136,6 +156,8 @@ def run_eval(
             "finalize": run_cfg.get("finalize"),
             "batch_size": run_cfg.get("batch_size"),
             "allow_unseeded_batch": run_cfg.get("allow_unseeded_batch"),
+            "ucb_window": run_cfg.get("ucb_window"),
+            "ucb_discount": run_cfg.get("ucb_discount"),
             "batched": run_cfg.get("batched"),
             "batched_seeded": run_cfg.get("batched_seeded"),
             "verifier_model_name": run_cfg.get("verifier_model_name"),
@@ -152,6 +174,35 @@ def run_eval(
 
     def _global_cache_key(method_name, params_hash):
         return f"{dataset_name}||{split}||{method_name}||{params_hash}||global"
+
+    checkpoint_baseline_accuracy = None
+    if checkpoint_enabled and checkpoint_examples > 0:
+        baseline_policy = None
+        baseline_policy_name = None
+        if checkpoint_policy_name:
+            baseline_policy_name, baseline_policy = resolve_policy_from_name(checkpoint_policy_name)
+        if baseline_policy is None:
+            for method_cfg in config["methods"]:
+                if method_cfg.get("name") == "greedy":
+                    baseline_policy_name, baseline_policy = resolve_policy_from_name(
+                        method_cfg.get("policy") or method_cfg.get("prompt")
+                    )
+                    break
+        if baseline_policy is None:
+            baseline_policy_name, baseline_policy = resolve_policy_from_name("direct")
+
+        baseline_count = min(checkpoint_examples, len(data))
+        if baseline_count > 0:
+            logger.info(
+                f"Checkpoint baseline: greedy/{baseline_policy_name} on first {baseline_count} examples"
+            )
+            baseline_correct = 0
+            for ex in data[:baseline_count]:
+                res = run_greedy(model, baseline_policy, ex, seed=seed)
+                if res.get("is_correct"):
+                    baseline_correct += 1
+            checkpoint_baseline_accuracy = baseline_correct / baseline_count
+            logger.info(f"Checkpoint baseline accuracy: {checkpoint_baseline_accuracy:.4f}")
 
     for method_cfg in config["methods"]:
         m_name = method_cfg["name"]
@@ -331,6 +382,8 @@ def run_eval(
                 raise ValueError("anytime_sc requires policies.")
             batch_size = int(method_cfg.get("batch_size", 1))
             allow_unseeded_batch = bool(method_cfg.get("allow_unseeded_batch", False))
+            prompt_cost = method_cfg.get("prompt_cost", 1.0)
+            completion_cost = method_cfg.get("completion_cost", 1.0)
             configs = []
             for b in method_cfg["budgets"]:
                 for d in method_cfg["deltas"]:
@@ -341,7 +394,34 @@ def run_eval(
                         "policies": policies,
                         "batch_size": batch_size,
                         "allow_unseeded_batch": allow_unseeded_batch,
+                        "ucb_window": method_cfg.get("ucb_window"),
+                        "ucb_discount": method_cfg.get("ucb_discount"),
+                        "prompt_cost": prompt_cost,
+                        "completion_cost": completion_cost,
                     })
+        elif m_name == "oracle_stopping":
+            if "budgets" not in method_cfg:
+                raise ValueError("oracle_stopping requires budgets.")
+            policies = resolve_policy_list()
+            if not policies:
+                raise ValueError("oracle_stopping requires policies.")
+            batch_size = int(method_cfg.get("batch_size", 1))
+            allow_unseeded_batch = bool(method_cfg.get("allow_unseeded_batch", False))
+            prompt_cost = method_cfg.get("prompt_cost", 1.0)
+            completion_cost = method_cfg.get("completion_cost", 1.0)
+            configs = []
+            for b in method_cfg["budgets"]:
+                configs.append({
+                    "budget": b,
+                    "allocation": method_cfg.get("allocation", "ucb"),
+                    "policies": policies,
+                    "batch_size": batch_size,
+                    "allow_unseeded_batch": allow_unseeded_batch,
+                    "ucb_window": method_cfg.get("ucb_window"),
+                    "ucb_discount": method_cfg.get("ucb_discount"),
+                    "prompt_cost": prompt_cost,
+                    "completion_cost": completion_cost,
+                })
         elif m_name == "global_anytime_sc":
             policy_name, single_policy = resolve_single_policy()
             if policy_name is None:
@@ -390,6 +470,11 @@ def run_eval(
                     })
         else:
             raise ValueError(f"Unknown method name: {m_name}")
+
+        method_max_new_tokens = method_cfg.get("max_new_tokens")
+        if method_max_new_tokens is not None:
+            for cfg in configs:
+                cfg["max_new_tokens"] = int(method_max_new_tokens)
         
         for run_cfg in configs:
             params_hash = _params_hash(m_name, run_cfg)
@@ -413,6 +498,8 @@ def run_eval(
                     fname = f"{fname}_verifier{verifier_label}"
             elif m_name == "anytime_sc":
                 fname = f"{dataset_name}_{m_name}_b{run_cfg['budget']}_d{run_cfg['delta']}_{run_cfg['allocation']}"
+            elif m_name == "oracle_stopping":
+                fname = f"{dataset_name}_{m_name}_b{run_cfg['budget']}_{run_cfg['allocation']}"
             elif m_name == "global_anytime_sc":
                 fname = f"{dataset_name}_{m_name}_T{run_cfg['global_budget_tokens']}_init{run_cfg['init_k']}_{run_cfg['allocation_policy']}_{run_cfg['policy_name']}"
 
@@ -423,6 +510,12 @@ def run_eval(
             
             out_path = os.path.join(config["output_dir"], fname)
             logger.info(f"Starting run for {fname}...")
+
+            default_max_new_tokens = model.max_new_tokens
+            if run_cfg.get("max_new_tokens") is not None:
+                model.max_new_tokens = int(run_cfg["max_new_tokens"])
+            else:
+                model.max_new_tokens = default_max_new_tokens
 
             if m_name == "global_anytime_sc":
                 global_cache_key = _global_cache_key(m_name, params_hash)
@@ -478,6 +571,8 @@ def run_eval(
                         res["top_p"] = run_cfg["top_p"]
                         res["top_k"] = run_cfg["top_k"]
                         res["finalize"] = run_cfg["finalize"]
+                        if run_cfg.get("max_new_tokens") is not None:
+                            res["method_max_new_tokens"] = run_cfg["max_new_tokens"]
                         if "target" not in res:
                             res["target"] = example_by_id.get(res.get("example_id"), {}).get("target")
                         ex = example_by_id.get(res.get("example_id"), {})
@@ -510,6 +605,14 @@ def run_eval(
                         }) + "\n")
                         cache_file.flush()
                 else:
+                    checkpoint_active = (
+                        checkpoint_baseline_accuracy is not None
+                        and checkpoint_examples > 0
+                        and m_name != "greedy"
+                    )
+                    seen_examples = 0
+                    correct_examples = 0
+
                     for example in tqdm(data):
                         try:
                             cache_key = _cache_key(example.get("id"), m_name, params_hash)
@@ -530,6 +633,30 @@ def run_eval(
                                     cached["model_name"] = config.get("model_name", "unknown")
                                 if "total_tokens" not in cached and "tokens_used" in cached:
                                     cached["total_tokens"] = cached.get("tokens_used")
+                                if "answer_type" not in cached and "answer_type" in example:
+                                    cached["answer_type"] = example.get("answer_type")
+                                if "code_task" not in cached and "code_task" in example:
+                                    cached["code_task"] = example.get("code_task")
+                                if "parse_error" not in cached:
+                                    cached["parse_error"] = example.get("parse_error", False)
+                                if "subject" not in cached and "subject" in example:
+                                    cached["subject"] = example.get("subject")
+                                if checkpoint_active:
+                                    seen_examples += 1
+                                    if cached.get("is_correct"):
+                                        correct_examples += 1
+                                    if seen_examples >= checkpoint_examples:
+                                        current_acc = correct_examples / max(seen_examples, 1)
+                                        threshold = checkpoint_baseline_accuracy * (1.0 - checkpoint_max_degradation)
+                                        if current_acc < threshold:
+                                            cached["early_stop_triggered"] = True
+                                            f_out.write(json.dumps(cached) + "\n")
+                                            f_out.flush()
+                                            logger.warning(
+                                                f"Checkpoint stop for {m_name}: acc={current_acc:.3f} < {threshold:.3f}"
+                                            )
+                                            break
+                                    cached["early_stop_triggered"] = False
                                 f_out.write(json.dumps(cached) + "\n")
                                 continue
                             # Dispatch
@@ -598,6 +725,25 @@ def run_eval(
                                     seed=seed,
                                     batch_size=run_cfg["batch_size"],
                                     allow_unseeded_batch=run_cfg["allow_unseeded_batch"],
+                                    ucb_window=run_cfg.get("ucb_window"),
+                                    ucb_discount=run_cfg.get("ucb_discount"),
+                                    prompt_cost=run_cfg.get("prompt_cost", 1.0),
+                                    completion_cost=run_cfg.get("completion_cost", 1.0),
+                                )
+                            elif m_name == "oracle_stopping":
+                                res = run_oracle_stopping(
+                                    model,
+                                    run_cfg["policies"],
+                                    example,
+                                    run_cfg["budget"],
+                                    run_cfg["allocation"],
+                                    seed=seed,
+                                    batch_size=run_cfg["batch_size"],
+                                    allow_unseeded_batch=run_cfg["allow_unseeded_batch"],
+                                    ucb_window=run_cfg.get("ucb_window"),
+                                    ucb_discount=run_cfg.get("ucb_discount"),
+                                    prompt_cost=run_cfg.get("prompt_cost", 1.0),
+                                    completion_cost=run_cfg.get("completion_cost", 1.0),
                                 )
                             else:
                                 raise ValueError(f"Unknown method name: {m_name}")
@@ -629,10 +775,20 @@ def run_eval(
                                 res["batch_size"] = run_cfg["batch_size"]
                             if run_cfg.get("allow_unseeded_batch") is not None:
                                 res["allow_unseeded_batch"] = run_cfg["allow_unseeded_batch"]
+                            if run_cfg.get("ucb_window") is not None:
+                                res["ucb_window"] = run_cfg["ucb_window"]
+                            if run_cfg.get("ucb_discount") is not None:
+                                res["ucb_discount"] = run_cfg["ucb_discount"]
+                            if run_cfg.get("prompt_cost") is not None:
+                                res["prompt_cost"] = run_cfg["prompt_cost"]
+                            if run_cfg.get("completion_cost") is not None:
+                                res["completion_cost"] = run_cfg["completion_cost"]
                             if run_cfg.get("batched") is not None:
                                 res["batched"] = run_cfg["batched"]
                             if run_cfg.get("batched_seeded") is not None:
                                 res["batched_seeded"] = run_cfg["batched_seeded"]
+                            if run_cfg.get("max_new_tokens") is not None:
+                                res["method_max_new_tokens"] = run_cfg["max_new_tokens"]
 
                             # Ensure fields exist
                             if "is_correct" not in res:
@@ -647,6 +803,22 @@ def run_eval(
                                 res["answer_type"] = example.get("answer_type")
                             if "code_task" not in res and "code_task" in example:
                                 res["code_task"] = example.get("code_task")
+                            if checkpoint_active:
+                                seen_examples += 1
+                                if res.get("is_correct"):
+                                    correct_examples += 1
+                                if seen_examples >= checkpoint_examples:
+                                    current_acc = correct_examples / max(seen_examples, 1)
+                                    threshold = checkpoint_baseline_accuracy * (1.0 - checkpoint_max_degradation)
+                                    if current_acc < threshold:
+                                        res["early_stop_triggered"] = True
+                                        f_out.write(json.dumps(res) + "\n")
+                                        f_out.flush()
+                                        logger.warning(
+                                            f"Checkpoint stop for {m_name}: acc={current_acc:.3f} < {threshold:.3f}"
+                                        )
+                                        break
+                                res["early_stop_triggered"] = False
 
                             f_out.write(json.dumps(res) + "\n")
                             f_out.flush() # Ensure safety
@@ -675,6 +847,7 @@ def run_eval(
                             continue
                 if cache_file:
                     cache_file.close()
+            model.max_new_tokens = default_max_new_tokens
 
 def main():
     parser = argparse.ArgumentParser()

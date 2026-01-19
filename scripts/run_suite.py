@@ -23,6 +23,9 @@ def main():
     parser.add_argument("--datasets", type=str, required=True, help="Comma-separated dataset list")
     parser.add_argument("--limit", type=int, help="Override limit for all datasets")
     parser.add_argument("--run_group", type=str, help="Optional run group id")
+    parser.add_argument("--checkpoint_examples", type=int, help="Enable checkpoint early stop after N examples")
+    parser.add_argument("--checkpoint_degradation", type=float, help="Max degradation vs greedy before stopping (e.g., 0.2)")
+    parser.add_argument("--checkpoint_policy", type=str, help="Policy name for greedy checkpoint baseline")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -37,6 +40,15 @@ def main():
 
     run_group = args.run_group or time.strftime("%Y%m%d-%H%M%S")
     print(f"Run group: {run_group}")
+
+    if args.checkpoint_examples is not None or args.checkpoint_degradation is not None:
+        config["checkpoint"] = {
+            "enabled": True,
+            "examples": int(args.checkpoint_examples or 50),
+            "max_degradation": float(args.checkpoint_degradation or 0.2),
+        }
+        if args.checkpoint_policy:
+            config["checkpoint"]["policy"] = args.checkpoint_policy
 
     dataset_limits = config.get("dataset_limits", {})
     base_limit = config.get("limit", None)

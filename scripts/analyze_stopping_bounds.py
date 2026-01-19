@@ -240,6 +240,11 @@ def main():
         default="outputs/summaries/stopping_bounds_analysis.csv",
         help="Output CSV path"
     )
+    parser.add_argument(
+        "--output_plot",
+        type=str,
+        help="Optional output PNG path for delta-risk plot"
+    )
     args = parser.parse_args()
     
     # Find JSONL files
@@ -291,6 +296,30 @@ def main():
     detail_path = args.output.replace(".csv", "_detail.csv")
     pd.DataFrame(analyses).to_csv(detail_path, index=False)
     print(f"Saved per-example details to {detail_path}")
+
+    if args.output_plot:
+        try:
+            import matplotlib.pyplot as plt
+        except Exception as e:
+            print(f"Warning: matplotlib not available for plotting: {e}", file=sys.stderr)
+        else:
+            plot_df = summary_df.dropna(subset=["delta", "empirical_error_rate"])
+            if plot_df.empty:
+                print("Warning: No data available for plotting.", file=sys.stderr)
+            else:
+                plt.figure(figsize=(6, 4))
+                plt.plot(plot_df["delta"], plot_df["empirical_error_rate"], marker="o", label="Empirical error")
+                plt.plot(plot_df["delta"], plot_df["delta"], linestyle="--", label="y = delta")
+                plt.xlabel("Delta")
+                plt.ylabel("Empirical Error Rate")
+                plt.title("Stopping Risk vs Delta")
+                plt.legend()
+                out_dir = os.path.dirname(args.output_plot)
+                if out_dir:
+                    os.makedirs(out_dir, exist_ok=True)
+                plt.tight_layout()
+                plt.savefig(args.output_plot, dpi=150)
+                print(f"Saved delta-risk plot to {args.output_plot}")
 
 
 if __name__ == "__main__":
