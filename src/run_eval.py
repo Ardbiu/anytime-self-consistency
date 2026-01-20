@@ -374,7 +374,7 @@ def run_eval(
             return configs
 
         # Refactor execution loop
-        if m_name == "greedy":
+        if m_name == "greedy" or m_name.startswith("greedy_"):
             policy_name, single_policy = resolve_single_policy()
             if policy_name is None:
                 try:
@@ -682,11 +682,13 @@ def run_eval(
             suffix_parts = []
             if run_group:
                 suffix_parts.append(run_group)
+            if num_shards > 1:
+                suffix_parts.append(f"shard{shard_id}of{num_shards}")
             if run_group or seed_override is not None:
                 suffix_parts.append(f"seed{seed}")
             suffix = "_".join(suffix_parts)
 
-            if m_name in ["greedy", "self_correction", "speculative_decoding", "medusa"]:
+            if m_name == "greedy" or m_name.startswith("greedy_") or m_name in ["self_correction", "speculative_decoding", "medusa"]:
                 fname = f"{dataset_name}_{m_name}_{run_cfg['policy_name']}"
                 if m_name == "speculative_decoding":
                     draft_label = run_cfg["draft_model_name"].split("/")[-1]
@@ -974,7 +976,7 @@ def run_eval(
                                 continue
                             profiler = LatencyProfiler(enabled=profile_latency)
                             # Dispatch
-                            if m_name == "greedy":
+                            if m_name == "greedy" or m_name.startswith("greedy_"):
                                 res = run_greedy(model, run_cfg["policy"], example, seed=seed, profiler=profiler)
                             elif m_name == "self_correction":
                                 res = run_self_correction(
