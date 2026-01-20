@@ -20,6 +20,20 @@ def _apply_limit(ds, limit: Optional[int], seed: int):
         return ds
     return ds.shuffle(seed=seed).select(range(min(limit, len(ds))))
 
+def _load_with_fallbacks(dataset_name: str, configs: List[Optional[str]], split: str):
+    last_error = None
+    for cfg in configs:
+        try:
+            if cfg:
+                return datasets.load_dataset(dataset_name, cfg, split=split)
+            return datasets.load_dataset(dataset_name, split=split)
+        except Exception as e:
+            last_error = e
+            continue
+    if last_error is not None:
+        logger.error(f"Failed to load {dataset_name} with configs {configs}: {last_error}")
+    return None
+
 def _find_last_boxed(text: str) -> Optional[str]:
     if not isinstance(text, str):
         return None
@@ -310,6 +324,147 @@ def load_mmlu(split: str = "test", limit: Optional[int] = None, seed: int = 42, 
     logger.info(f"Loaded {len(examples)} examples.")
     return examples
 
+def load_gpqa(split: str = "test", limit: Optional[int] = None, seed: int = 42) -> List[Dict[str, Any]]:
+    logger.info(f"Loading gpqa[{split}] limit={limit}...")
+    ds = _load_with_fallbacks("gpqa", ["gpqa_main", "main", None], split)
+    if ds is None:
+        return []
+    ds = _apply_limit(ds, limit, seed)
+
+    examples = []
+    for i, item in enumerate(ds):
+        question_text = str(item.get("question") or item.get("query") or item.get("stem") or item.get("prompt") or "")
+        choice_labels: List[str] = []
+        choice_texts: List[str] = []
+        target = None
+
+        if not choice_texts:
+            choices_raw = item.get("choices") or item.get("options") or item.get("answers") or []
+            if isinstance(choices_raw, dict):
+                labels = choices_raw.get("label") or choices_raw.get("labels") or []
+                texts = choices_raw.get("text") or choices_raw.get("texts") or []
+                for label, text in zip(labels, texts):
+                    norm_label = _normalize_choice_label(label)
+                    if norm_label is None:
+                        continue
+                    choice_labels.append(norm_label)
+                    choice_texts.append(str(text))
+            elif isinstance(choices_raw, list):
+                for choice in choices_raw:
+                    if isinstance(choice, dict):
+                        norm_label = _normalize_choice_label(choice.get("label") or choice.get("key"))
+                        text = choice.get("text") or choice.get("content") or choice.get("value")
+                        if text is None:
+                            continue
+                        if norm_label is None:
+                            norm_label = _normalize_choice_label(len(choice_labels))
+                        choice_labels.append(norm_label)
+                        choice_texts.append(str(text))
+                    else:
+                        choice_texts.append(str(choice))
+
+        incorrect = item.get("incorrect_answers") or item.get("incorrect") or []
+        correct_text = item.get("correct_answer") or item.get("answer") or item.get("gold")
+        if not choice_texts and incorrect and correct_text:
+            choice_texts = [str(x) for x in incorrect] + [str(correct_text)]
+
+        if choice_texts and not choice_labels:
+            choice_labels = [chr(ord("A") + idx) for idx in range(len(choice_texts))]
+
+        if target is None:
+            raw_target = item.get("answer") or item.get("correct_answer") or item.get("answerKey")
+            target = _normalize_choice_label(raw_target)
+
+        if target is None and correct_text and choice_texts:
+            for label, text in zip(choice_labels, choice_texts):
+                if str(text).strip() == str(correct_text).strip():
+                    target = label
+                    break
+
+        if choice_texts:
+            formatted_question = _format_multiple_choice_question(question_text, choice_texts, choice_labels)
+            answer_type = "multiple_choice"
+        else:
+            formatted_question = question_text
+            answer_type = "text"
+
+        examples.append({
+            "id": f"gpqa_{split}_{i}",
+            "question": formatted_question,
+            "answer_type": answer_type,
+            "choices": choice_texts,
+            "choice_labels": choice_labels,
+            "target": target if target is not None else (str(correct_text) if correct_text is not None else None),
+        })
+
+    logger.info(f"Loaded {len(examples)} examples.")
+    return examples
+
+def load_bbh(
+    split: str = "test",
+    limit: Optional[int] = None,
+    seed: int = 42,
+    task: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    logger.info(f"Loading bbh[{split}] limit={limit} task={task}...")
+    ds = _load_with_fallbacks("lukaemon/bbh", [task, None], split)
+    if ds is None:
+        ds = _load_with_fallbacks("bigbench", ["bbh", task], split)
+    if ds is None:
+        return []
+    ds = _apply_limit(ds, limit, seed)
+
+    examples = []
+    for i, item in enumerate(ds):
+        base_prompt = str(item.get("input") or item.get("question") or item.get("prompt") or "")
+        few_shot = item.get("few_shot") or item.get("cot_prompt") or item.get("prefix")
+        if few_shot:
+            prompt = f"{few_shot}\n{base_prompt}"
+        else:
+            prompt = base_prompt
+
+        choice_labels: List[str] = []
+        choice_texts: List[str] = []
+        choices_raw = item.get("choices") or item.get("options") or []
+        if isinstance(choices_raw, list):
+            for choice in choices_raw:
+                if isinstance(choice, dict):
+                    norm_label = _normalize_choice_label(choice.get("label") or choice.get("key"))
+                    text = choice.get("text") or choice.get("content") or choice.get("value")
+                    if text is None:
+                        continue
+                    if norm_label is None:
+                        norm_label = _normalize_choice_label(len(choice_labels))
+                    choice_labels.append(norm_label)
+                    choice_texts.append(str(text))
+                else:
+                    choice_texts.append(str(choice))
+
+        if choice_texts and not choice_labels:
+            choice_labels = [chr(ord("A") + idx) for idx in range(len(choice_texts))]
+
+        target = item.get("target") or item.get("answer") or item.get("label")
+        if choice_texts:
+            formatted_question = _format_multiple_choice_question(prompt, choice_texts, choice_labels)
+            answer_type = "multiple_choice"
+            target = _normalize_choice_label(target) if target is not None else None
+        else:
+            formatted_question = prompt
+            answer_type = "text"
+
+        examples.append({
+            "id": f"bbh_{split}_{i}",
+            "question": formatted_question,
+            "answer_type": answer_type,
+            "choices": choice_texts,
+            "choice_labels": choice_labels,
+            "target": str(target) if target is not None else None,
+            "subject": item.get("task") or task or item.get("category"),
+        })
+
+    logger.info(f"Loaded {len(examples)} examples.")
+    return examples
+
 def load_humaneval(split: str = "test", limit: Optional[int] = None, seed: int = 42) -> List[Dict[str, Any]]:
     logger.info(f"Loading humaneval[{split}] limit={limit}...")
     try:
@@ -380,6 +535,13 @@ def load_dataset_records(dataset_name: str, split: str = "test", limit: Optional
         if ":" in dataset_name:
             subject = dataset_name.split(":", 1)[1]
         return load_mmlu(split=split, limit=limit, seed=seed, subject=subject)
+    if name in {"gpqa", "gpqa_main", "gpqa-main"}:
+        return load_gpqa(split=split, limit=limit, seed=seed)
+    if name.startswith("bbh"):
+        task = None
+        if ":" in dataset_name:
+            task = dataset_name.split(":", 1)[1]
+        return load_bbh(split=split, limit=limit, seed=seed, task=task)
     if name in {"humaneval", "human_eval", "openai_humaneval", "openai/humaneval"}:
         return load_humaneval(split=split, limit=limit, seed=seed)
     if name in {"mbpp", "google/mbpp"}:

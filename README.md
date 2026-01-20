@@ -10,6 +10,12 @@
 -- **Best-of-N (Verifier/Scorer)**
 -- **Anytime Self-Consistency** (Ours)
 -
+-## ICML-Grade Additions
+-**Contextual BwK**: shadow pricing can be conditioned on prompt length or hidden-state norms (`context_config`).
+-**Empirical Bernstein Bounds**: optional stopping bounds (`bound_method: empirical_bernstein`) for tighter risk control.
+-**Latency Profiling**: per-example sampling/bandit/scoring timers + `latency_benefit` in outputs.
+-**Resume + SIGTERM Safety**: atomic `.tmp` runs, resumable state, and graceful shutdown on clusters.
+-
 -## Installation
 -
 -```bash
@@ -89,6 +95,8 @@ Supported datasets beyond GSM8K/MATH:
 - `mmlu:<subject>` (e.g. `mmlu:abstract_algebra`)
 - `humaneval` (code generation)
 - `mbpp` (code generation)
+- `gpqa` (graduate-level science multiple choice)
+- `bbh` or `bbh:<task>` (Big-Bench Hard; supports few-shot prompts)
 
 Smoke configs are provided in:
 - `configs/arc_challenge_smoke.yaml`
@@ -122,16 +130,24 @@ Note: code-task evaluation executes candidate code in a subprocess; run these in
 -make clean_keep_latest
 -```
 -
+-To resume interrupted runs (cluster preemption safe):
+-```bash
+-python -m src.run_eval --config configs/paper_hero.yaml --resume --save_interval 10
+-```
+-
 -## Method schema and run labels
 -Each config `methods` entry must include `name` plus method-specific params:
 -- `greedy`: optional `policy` or `prompt` (defaults to `direct`; falls back to raw question if unknown).
+-- `self_correction`: two-pass correction baseline (optional `correction_prompt` template).
+-- `speculative_decoding`: requires `draft_model_name` (optional `draft_max_new_tokens`, `draft_use_flash_attention`, `draft_use_compile`).
+-- `medusa`: requires `medusa_heads` (optional `medusa_model_name`).
 -- `self_consistency` / `best_of_n`: require `policy`/`prompt` plus either `n_values` or `match_budgets` + `tokens_per_sample` (for budget-matched fixed-N runs). Optional `batched` and `batched_seeded`.
 -- `best_of_n_verifier`: requires `policy`/`prompt`, `n_values`, and `verifier_model_name` (optional `verifier_max_new_tokens`, `verifier_task` (yes_no or reward), `batched`, `batched_seeded`).
 -- `self_consistency_early_stop`: requires `policy`, `n_values`, and stopping params (`stop_ratio` or `stop_count`, plus `min_samples`).
 -- `best_of_n_early_stop`: requires `policy`, `n_values`, and `score_threshold` (+ optional `min_samples`).
--- `anytime_sc`: require `policies`, `budgets`, `deltas` (optional `allocation` like `ucb`, `ucb_window`, `ucb_discount`, `uniform`; plus `batch_size`, `allow_unseeded_batch`, `ucb_window`, `ucb_discount`, `prompt_cost`, `completion_cost`).
+-- `anytime_sc`: require `policies`, `budgets`, `deltas` (optional `allocation` like `ucb`, `ucb_window`, `ucb_discount`, `uniform`, `bwk`, `contextual_bwk`; plus `batch_size`, `allow_unseeded_batch`, `ucb_window`, `ucb_discount`, `prompt_cost`, `completion_cost`, `bound_method`, `context_config`, `context_policy`, `safety_valve`).
 -- `oracle_stopping`: require `policies`, `budgets` (optional `allocation`, `batch_size`, `allow_unseeded_batch`, `ucb_window`, `ucb_discount`, `prompt_cost`, `completion_cost`).
--- `global_anytime_sc`: dataset-level global budget. Requires `policy`, `global_budget_tokens`, `init_k`, `allocation_policy`, and optional `max_samples_per_item`, `per_example_budget_tokens`, `ucb_c`, `store_allocation_steps`, `temperature`, `top_p`, `top_k`, `finalize`.
+-- `global_anytime_sc`: dataset-level global budget. Requires `policy`, `global_budget_tokens`, `init_k`, `allocation_policy`, and optional `max_samples_per_item`, `per_example_budget_tokens`, `ucb_c`, `store_allocation_steps`, `temperature`, `top_p`, `top_k`, `finalize`, `context_config`.
 -Available prompts include `direct`, `cot`, `cot_long` (verbose CoT for compute-equivalent greedy), and `decompose`.
 -
 -Output files are named as:
@@ -187,6 +203,11 @@ Note: code-task evaluation executes candidate code in a subprocess; run these in
 -python scripts/aggregate_results.py --latest_group --bootstrap 1000
 -python scripts/plot_pareto.py --latest_group --grouped
 -python scripts/diagnose_sampling.py --latest_group
+-```
+-
+-### Fleet manager (cluster autopilot)
+-```bash
+-bash fleet_manager.sh
 -```
 -
 -## Pseudo-validation for ucb_c

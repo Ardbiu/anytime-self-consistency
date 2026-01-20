@@ -4,6 +4,12 @@ import os
 from .utils import load_prompt_template
 
 @dataclass
+class ContextConfig:
+    mode: str = "length"
+    length_bins: tuple = (64, 128, 256, 512)
+    embedding_bins: tuple = (1.0, 2.0, 4.0)
+
+@dataclass
 class Policy:
     name: str
     prompt_template_path: str
@@ -40,6 +46,26 @@ class BwKShadowPricePolicy:
     def score(self, p_correct: float, normalized_cost: float) -> float:
         """BwK index: P(correct) - lambda * normalized_cost."""
         return float(p_correct) - self.lambda_price * float(normalized_cost)
+
+def _bucketize(value: float, bins: tuple) -> str:
+    if value is None:
+        return "unknown"
+    for idx, bound in enumerate(bins):
+        if value <= bound:
+            return f"b{idx}"
+    return f"b{len(bins)}"
+
+def bucketize_context(prompt_length: int, embedding_norm: float, config: ContextConfig) -> str:
+    if config is None:
+        return "default"
+    mode = (config.mode or "length").lower()
+    length_bucket = _bucketize(prompt_length, config.length_bins)
+    if mode == "length":
+        return f"len_{length_bucket}"
+    if mode in {"hidden_state", "embedding"}:
+        emb_bucket = _bucketize(embedding_norm, config.embedding_bins)
+        return f"len_{length_bucket}_emb_{emb_bucket}"
+    return f"len_{length_bucket}"
 
 def make_prompt(policy: Policy, question: str) -> str:
     """Formats the prompt for the given question."""

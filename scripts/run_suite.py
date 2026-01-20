@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--checkpoint_examples", type=int, help="Enable checkpoint early stop after N examples")
     parser.add_argument("--checkpoint_degradation", type=float, help="Max degradation vs greedy before stopping (e.g., 0.2)")
     parser.add_argument("--checkpoint_policy", type=str, help="Policy name for greedy checkpoint baseline")
+    parser.add_argument("--resume", action="store_true", help="Resume from existing outputs")
+    parser.add_argument("--save_interval", type=int, default=0, help="Save state every N examples")
     args = parser.parse_args()
 
     with open(args.config, "r") as f:
@@ -63,6 +65,8 @@ def main():
                 limit_override=limit,
                 seed_override=seed,
                 run_group=run_group,
+                resume=args.resume,
+                save_interval=args.save_interval,
             )
 
 if __name__ == "__main__":

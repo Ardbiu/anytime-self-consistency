@@ -1,6 +1,8 @@
 import collections
+from typing import Optional
 from .models import ModelRunner
 from .policies import Policy, make_prompt
+from .profiler import LatencyProfiler
 from .scoring import (
     get_answer_type,
     extract_candidate_answer,
@@ -10,7 +12,13 @@ from .scoring import (
     evaluate_prediction,
 )
 
-def run_greedy(model: ModelRunner, policy: Policy, example: dict, seed: int = 42) -> dict:
+def run_greedy(
+    model: ModelRunner,
+    policy: Policy,
+    example: dict,
+    seed: int = 42,
+    profiler: Optional[LatencyProfiler] = None,
+) -> dict:
     """Run single greedy sample (or near greedy)."""
     if policy is None:
         prompt = example['question']
@@ -19,29 +27,53 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict, seed: int = 42
         prompt = make_prompt(policy, example['question'])
         policy_name = policy.name
     
-    res = model.generate(
-        prompt,
-        do_sample=False,
-        seed=seed
-    )
+    if profiler:
+        with profiler.track("sampling", use_cuda=True):
+            res = model.generate(
+                prompt,
+                do_sample=False,
+                seed=seed
+            )
+    else:
+        res = model.generate(
+            prompt,
+            do_sample=False,
+            seed=seed
+        )
     
     answer_type = get_answer_type(example)
     choices = example.get("choices")
     choice_labels = example.get("choice_labels")
     pred_text = res["text"]
-    candidate_text = extract_candidate_answer(
-        pred_text,
-        answer_type=answer_type,
-        choices=choices,
-        choice_labels=choice_labels,
-    )
-    pred_val = normalize_answer_for_candidates(
-        candidate_text,
-        answer_type=answer_type,
-        choices=choices,
-        choice_labels=choice_labels,
-    )
-    is_correct = evaluate_prediction(pred_text, pred_val, example)
+    if profiler:
+        with profiler.track("scoring"):
+            candidate_text = extract_candidate_answer(
+                pred_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            pred_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            is_correct = evaluate_prediction(pred_text, pred_val, example)
+    else:
+        candidate_text = extract_candidate_answer(
+            pred_text,
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        pred_val = normalize_answer_for_candidates(
+            candidate_text,
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        is_correct = evaluate_prediction(pred_text, pred_val, example)
     
     return {
         "example_id": example['id'],
@@ -55,7 +87,278 @@ def run_greedy(model: ModelRunner, policy: Policy, example: dict, seed: int = 42
         "completion_tokens": res['completion_tokens'],
         "total_tokens": res['total_tokens'],
         "time_s": res['time_s'],
-        "extra": {"full_text": pred_text}
+        "extra": {
+            "full_text": pred_text,
+            "latency": profiler.summary() if profiler else None,
+        }
+    }
+
+_DEFAULT_SELF_CORRECTION_PROMPT = (
+    "{question}\n\n"
+    "Initial answer:\n{draft}\n\n"
+    "Review the solution for mistakes and provide a corrected final answer only.\n"
+    "Final:"
+)
+
+def run_self_correction(
+    model: ModelRunner,
+    policy: Policy,
+    example: dict,
+    seed: int = 42,
+    correction_prompt: Optional[str] = None,
+    profiler: Optional[LatencyProfiler] = None,
+) -> dict:
+    prompt = make_prompt(policy, example["question"])
+    if profiler:
+        with profiler.track("sampling", use_cuda=True):
+            draft_res = model.generate(
+                prompt,
+                temperature=getattr(policy, "temperature", 0.7),
+                top_p=getattr(policy, "top_p", 1.0),
+                top_k=getattr(policy, "top_k", 50),
+                do_sample=True,
+                seed=seed,
+            )
+    else:
+        draft_res = model.generate(
+            prompt,
+            temperature=getattr(policy, "temperature", 0.7),
+            top_p=getattr(policy, "top_p", 1.0),
+            top_k=getattr(policy, "top_k", 50),
+            do_sample=True,
+            seed=seed,
+        )
+
+    question_text = example.get("question", "")
+    template = correction_prompt or _DEFAULT_SELF_CORRECTION_PROMPT
+    correction_text = template.format(question=question_text, draft=draft_res["text"])
+    if profiler:
+        with profiler.track("sampling", use_cuda=True):
+            corrected_res = model.generate(
+                correction_text,
+                do_sample=False,
+                seed=seed + 1,
+            )
+    else:
+        corrected_res = model.generate(
+            correction_text,
+            do_sample=False,
+            seed=seed + 1,
+        )
+
+    answer_type = get_answer_type(example)
+    choices = example.get("choices")
+    choice_labels = example.get("choice_labels")
+    if profiler:
+        with profiler.track("scoring"):
+            candidate_text = extract_candidate_answer(
+                corrected_res["text"],
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            pred_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            is_correct = evaluate_prediction(corrected_res["text"], pred_val, example)
+    else:
+        candidate_text = extract_candidate_answer(
+            corrected_res["text"],
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        pred_val = normalize_answer_for_candidates(
+            candidate_text,
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        is_correct = evaluate_prediction(corrected_res["text"], pred_val, example)
+
+    return {
+        "example_id": example["id"],
+        "method": "self_correction",
+        "policy": policy.name,
+        "n": 2,
+        "pred": pred_val,
+        "is_correct": is_correct,
+        "prompt_tokens": draft_res["prompt_tokens"] + corrected_res["prompt_tokens"],
+        "completion_tokens": draft_res["completion_tokens"] + corrected_res["completion_tokens"],
+        "total_tokens": draft_res["total_tokens"] + corrected_res["total_tokens"],
+        "time_s": draft_res["time_s"] + corrected_res["time_s"],
+        "extra": {
+            "draft_text": draft_res["text"],
+            "correction_text": corrected_res["text"],
+            "latency": profiler.summary() if profiler else None,
+        },
+    }
+
+def run_speculative_decoding(
+    model: ModelRunner,
+    draft_model: ModelRunner,
+    policy: Policy,
+    example: dict,
+    seed: int = 42,
+    profiler: Optional[LatencyProfiler] = None,
+) -> dict:
+    prompt = make_prompt(policy, example["question"])
+    if profiler:
+        with profiler.track("sampling", use_cuda=True):
+            res = model.generate_speculative(
+                prompt,
+                draft_model,
+                temperature=getattr(policy, "temperature", 0.7),
+                top_p=getattr(policy, "top_p", 1.0),
+                top_k=getattr(policy, "top_k", 50),
+                do_sample=False,
+                seed=seed,
+            )
+    else:
+        res = model.generate_speculative(
+            prompt,
+            draft_model,
+            temperature=getattr(policy, "temperature", 0.7),
+            top_p=getattr(policy, "top_p", 1.0),
+            top_k=getattr(policy, "top_k", 50),
+            do_sample=False,
+            seed=seed,
+        )
+
+    answer_type = get_answer_type(example)
+    choices = example.get("choices")
+    choice_labels = example.get("choice_labels")
+    if profiler:
+        with profiler.track("scoring"):
+            candidate_text = extract_candidate_answer(
+                res["text"],
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            pred_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            is_correct = evaluate_prediction(res["text"], pred_val, example)
+    else:
+        candidate_text = extract_candidate_answer(
+            res["text"],
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        pred_val = normalize_answer_for_candidates(
+            candidate_text,
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        is_correct = evaluate_prediction(res["text"], pred_val, example)
+
+    return {
+        "example_id": example["id"],
+        "method": "speculative_decoding",
+        "policy": policy.name,
+        "n": 1,
+        "pred": pred_val,
+        "is_correct": is_correct,
+        "prompt_tokens": res["prompt_tokens"],
+        "completion_tokens": res["completion_tokens"],
+        "total_tokens": res["total_tokens"],
+        "time_s": res["time_s"],
+        "extra": {
+            "speculative_fallback": res.get("speculative_fallback", False),
+            "draft_model": draft_model.model_name,
+            "latency": profiler.summary() if profiler else None,
+        },
+    }
+
+def run_medusa(
+    model: ModelRunner,
+    policy: Policy,
+    example: dict,
+    seed: int = 42,
+    medusa_heads: int = 4,
+    profiler: Optional[LatencyProfiler] = None,
+) -> dict:
+    prompt = make_prompt(policy, example["question"])
+    if profiler:
+        with profiler.track("sampling", use_cuda=True):
+            res = model.generate_medusa(
+                prompt,
+                medusa_heads=medusa_heads,
+                temperature=getattr(policy, "temperature", 0.7),
+                top_p=getattr(policy, "top_p", 1.0),
+                top_k=getattr(policy, "top_k", 50),
+                do_sample=False,
+                seed=seed,
+            )
+    else:
+        res = model.generate_medusa(
+            prompt,
+            medusa_heads=medusa_heads,
+            temperature=getattr(policy, "temperature", 0.7),
+            top_p=getattr(policy, "top_p", 1.0),
+            top_k=getattr(policy, "top_k", 50),
+            do_sample=False,
+            seed=seed,
+        )
+
+    answer_type = get_answer_type(example)
+    choices = example.get("choices")
+    choice_labels = example.get("choice_labels")
+    if profiler:
+        with profiler.track("scoring"):
+            candidate_text = extract_candidate_answer(
+                res["text"],
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            pred_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            is_correct = evaluate_prediction(res["text"], pred_val, example)
+    else:
+        candidate_text = extract_candidate_answer(
+            res["text"],
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        pred_val = normalize_answer_for_candidates(
+            candidate_text,
+            answer_type=answer_type,
+            choices=choices,
+            choice_labels=choice_labels,
+        )
+        is_correct = evaluate_prediction(res["text"], pred_val, example)
+
+    return {
+        "example_id": example["id"],
+        "method": "medusa",
+        "policy": policy.name,
+        "n": 1,
+        "pred": pred_val,
+        "is_correct": is_correct,
+        "prompt_tokens": res["prompt_tokens"],
+        "completion_tokens": res["completion_tokens"],
+        "total_tokens": res["total_tokens"],
+        "time_s": res["time_s"],
+        "extra": {
+            "medusa_heads": medusa_heads,
+            "medusa_fallback": res.get("medusa_fallback", False),
+            "latency": profiler.summary() if profiler else None,
+        },
     }
 
 def run_self_consistency(
@@ -66,6 +369,7 @@ def run_self_consistency(
     seed: int = 42,
     batched: bool = False,
     batched_seeded: bool = False,
+    profiler: Optional[LatencyProfiler] = None,
 ) -> dict:
     """Run Self-Consistency with Majority Vote.
     
@@ -88,60 +392,112 @@ def run_self_consistency(
         # Batched generation for throughput
         prompts = [prompt] * n
         seeds = [seed + i for i in range(n)] if batched_seeded else None
-        results = model.generate_batch(
-            prompts,
-            temperature=getattr(policy, 'temperature', 0.7),
-            top_p=getattr(policy, 'top_p', 1.0),
-            top_k=getattr(policy, 'top_k', 50),
-            do_sample=True,
-            seeds=seeds,  # None enables true batching
-        )
+        if profiler:
+            with profiler.track("sampling", use_cuda=True):
+                results = model.generate_batch(
+                    prompts,
+                    temperature=getattr(policy, 'temperature', 0.7),
+                    top_p=getattr(policy, 'top_p', 1.0),
+                    top_k=getattr(policy, 'top_k', 50),
+                    do_sample=True,
+                    seeds=seeds,  # None enables true batching
+                )
+        else:
+            results = model.generate_batch(
+                prompts,
+                temperature=getattr(policy, 'temperature', 0.7),
+                top_p=getattr(policy, 'top_p', 1.0),
+                top_k=getattr(policy, 'top_k', 50),
+                do_sample=True,
+                seeds=seeds,  # None enables true batching
+            )
         for res in results:
             total_prompt_tokens += res['prompt_tokens']
             total_completion_tokens += res['completion_tokens']
             total_time += res['time_s']
             
-            candidate_text = extract_candidate_answer(
-                res["text"],
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
-            ans_val = normalize_answer_for_candidates(
-                candidate_text,
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
+            if profiler:
+                with profiler.track("scoring"):
+                    candidate_text = extract_candidate_answer(
+                        res["text"],
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+                    ans_val = normalize_answer_for_candidates(
+                        candidate_text,
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+            else:
+                candidate_text = extract_candidate_answer(
+                    res["text"],
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                ans_val = normalize_answer_for_candidates(
+                    candidate_text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
             candidates.append(ans_val)
             candidate_texts.append(candidate_text)
     else:
         # Serial generation (original behavior)
         for i in range(n):
-            res = model.generate(
-                prompt,
-                temperature=getattr(policy, 'temperature', 0.7),
-                top_p=getattr(policy, 'top_p', 1.0),
-                top_k=getattr(policy, 'top_k', 50),
-                do_sample=True,
-                seed=seed + i
-            )
+            if profiler:
+                with profiler.track("sampling", use_cuda=True):
+                    res = model.generate(
+                        prompt,
+                        temperature=getattr(policy, 'temperature', 0.7),
+                        top_p=getattr(policy, 'top_p', 1.0),
+                        top_k=getattr(policy, 'top_k', 50),
+                        do_sample=True,
+                        seed=seed + i
+                    )
+            else:
+                res = model.generate(
+                    prompt,
+                    temperature=getattr(policy, 'temperature', 0.7),
+                    top_p=getattr(policy, 'top_p', 1.0),
+                    top_k=getattr(policy, 'top_k', 50),
+                    do_sample=True,
+                    seed=seed + i
+                )
             total_prompt_tokens += res['prompt_tokens']
             total_completion_tokens += res['completion_tokens']
             total_time += res['time_s']
             
-            candidate_text = extract_candidate_answer(
-                res["text"],
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
-            ans_val = normalize_answer_for_candidates(
-                candidate_text,
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
+            if profiler:
+                with profiler.track("scoring"):
+                    candidate_text = extract_candidate_answer(
+                        res["text"],
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+                    ans_val = normalize_answer_for_candidates(
+                        candidate_text,
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+            else:
+                candidate_text = extract_candidate_answer(
+                    res["text"],
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                ans_val = normalize_answer_for_candidates(
+                    candidate_text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
             candidates.append(ans_val)
             candidate_texts.append(candidate_text)
         
@@ -168,7 +524,11 @@ def run_self_consistency(
                 break
         if pred_text is None and candidate_texts:
             pred_text = candidate_texts[0]
-        is_correct = evaluate_prediction(pred_text or "", top_ans, example)
+        if profiler:
+            with profiler.track("scoring"):
+                is_correct = evaluate_prediction(pred_text or "", top_ans, example)
+        else:
+            is_correct = evaluate_prediction(pred_text or "", top_ans, example)
 
     return {
         "example_id": example['id'],
@@ -184,7 +544,8 @@ def run_self_consistency(
         "extra": {
             "candidates": candidates,
             "unique_candidate_frac": unique_frac,
-            "num_candidates": len(candidates)
+            "num_candidates": len(candidates),
+            "latency": profiler.summary() if profiler else None,
         }
     }
 
@@ -196,6 +557,7 @@ def run_best_of_n(
     seed: int = 42,
     batched: bool = False,
     batched_seeded: bool = False,
+    profiler: Optional[LatencyProfiler] = None,
 ) -> dict:
     """Run Best-of-N using a heuristic scorer.
     
@@ -222,38 +584,71 @@ def run_best_of_n(
         # Batched generation
         prompts = [prompt] * n
         seeds = [seed + i for i in range(n)] if batched_seeded else None
-        results = model.generate_batch(
-            prompts,
-            temperature=getattr(policy, 'temperature', 0.7),
-            top_p=getattr(policy, 'top_p', 1.0),
-            top_k=getattr(policy, 'top_k', 50),
-            do_sample=True,
-            seeds=seeds,
-        )
+        if profiler:
+            with profiler.track("sampling", use_cuda=True):
+                results = model.generate_batch(
+                    prompts,
+                    temperature=getattr(policy, 'temperature', 0.7),
+                    top_p=getattr(policy, 'top_p', 1.0),
+                    top_k=getattr(policy, 'top_k', 50),
+                    do_sample=True,
+                    seeds=seeds,
+                )
+        else:
+            results = model.generate_batch(
+                prompts,
+                temperature=getattr(policy, 'temperature', 0.7),
+                top_p=getattr(policy, 'top_p', 1.0),
+                top_k=getattr(policy, 'top_k', 50),
+                do_sample=True,
+                seeds=seeds,
+            )
         for res in results:
             total_prompt_tokens += res['prompt_tokens']
             total_completion_tokens += res['completion_tokens']
             total_time += res['time_s']
             
-            candidate_text = extract_candidate_answer(
-                res["text"],
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
-            sc = score_candidate(
-                res["text"],
-                answer_type=answer_type,
-                example=example,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
-            ans_val = normalize_answer_for_candidates(
-                candidate_text,
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
+            if profiler:
+                with profiler.track("scoring"):
+                    candidate_text = extract_candidate_answer(
+                        res["text"],
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+                    sc = score_candidate(
+                        res["text"],
+                        answer_type=answer_type,
+                        example=example,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+                    ans_val = normalize_answer_for_candidates(
+                        candidate_text,
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+            else:
+                candidate_text = extract_candidate_answer(
+                    res["text"],
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                sc = score_candidate(
+                    res["text"],
+                    answer_type=answer_type,
+                    example=example,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                ans_val = normalize_answer_for_candidates(
+                    candidate_text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
             candidates.append(ans_val)
             all_texts.append(res["text"])
 
@@ -265,37 +660,70 @@ def run_best_of_n(
     else:
         # Serial generation (original behavior)
         for i in range(n):
-            res = model.generate(
-                prompt,
-                temperature=getattr(policy, 'temperature', 0.7),
-                top_p=getattr(policy, 'top_p', 1.0),
-                top_k=getattr(policy, 'top_k', 50),
-                do_sample=True,
-                seed=seed + i
-            )
+            if profiler:
+                with profiler.track("sampling", use_cuda=True):
+                    res = model.generate(
+                        prompt,
+                        temperature=getattr(policy, 'temperature', 0.7),
+                        top_p=getattr(policy, 'top_p', 1.0),
+                        top_k=getattr(policy, 'top_k', 50),
+                        do_sample=True,
+                        seed=seed + i
+                    )
+            else:
+                res = model.generate(
+                    prompt,
+                    temperature=getattr(policy, 'temperature', 0.7),
+                    top_p=getattr(policy, 'top_p', 1.0),
+                    top_k=getattr(policy, 'top_k', 50),
+                    do_sample=True,
+                    seed=seed + i
+                )
             total_prompt_tokens += res['prompt_tokens']
             total_completion_tokens += res['completion_tokens']
             total_time += res['time_s']
             
-            candidate_text = extract_candidate_answer(
-                res["text"],
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
-            sc = score_candidate(
-                res["text"],
-                answer_type=answer_type,
-                example=example,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
-            ans_val = normalize_answer_for_candidates(
-                candidate_text,
-                answer_type=answer_type,
-                choices=choices,
-                choice_labels=choice_labels,
-            )
+            if profiler:
+                with profiler.track("scoring"):
+                    candidate_text = extract_candidate_answer(
+                        res["text"],
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+                    sc = score_candidate(
+                        res["text"],
+                        answer_type=answer_type,
+                        example=example,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+                    ans_val = normalize_answer_for_candidates(
+                        candidate_text,
+                        answer_type=answer_type,
+                        choices=choices,
+                        choice_labels=choice_labels,
+                    )
+            else:
+                candidate_text = extract_candidate_answer(
+                    res["text"],
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                sc = score_candidate(
+                    res["text"],
+                    answer_type=answer_type,
+                    example=example,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                ans_val = normalize_answer_for_candidates(
+                    candidate_text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
             candidates.append(ans_val)
 
             if sc > best_score:
@@ -311,7 +739,11 @@ def run_best_of_n(
     is_correct = False
     if best_ans_val is not None:
         pred_text = best_text or ""
-        is_correct = evaluate_prediction(pred_text, best_ans_val, example)
+        if profiler:
+            with profiler.track("scoring"):
+                is_correct = evaluate_prediction(pred_text, best_ans_val, example)
+        else:
+            is_correct = evaluate_prediction(pred_text, best_ans_val, example)
 
     return {
         "example_id": example['id'],
@@ -327,7 +759,8 @@ def run_best_of_n(
         "extra": {
             "best_score": best_score,
             "unique_candidate_frac": unique_frac,
-            "num_candidates": len(candidates)
+            "num_candidates": len(candidates),
+            "latency": profiler.summary() if profiler else None,
         }
     }
 
@@ -340,6 +773,7 @@ def run_best_of_n_verifier(
     seed: int = 42,
     batched: bool = False,
     batched_seeded: bool = False,
+    profiler: Optional[LatencyProfiler] = None,
 ) -> dict:
     """Run Best-of-N using a learned verifier score (yes/no)."""
     prompt = make_prompt(policy, example["question"])
@@ -358,14 +792,25 @@ def run_best_of_n_verifier(
     if batched and hasattr(model, "generate_batch"):
         prompts = [prompt] * n
         seeds = [seed + i for i in range(n)] if batched_seeded else None
-        results = model.generate_batch(
-            prompts,
-            temperature=getattr(policy, "temperature", 0.7),
-            top_p=getattr(policy, "top_p", 1.0),
-            top_k=getattr(policy, "top_k", 50),
-            do_sample=True,
-            seeds=seeds,
-        )
+        if profiler:
+            with profiler.track("sampling", use_cuda=True):
+                results = model.generate_batch(
+                    prompts,
+                    temperature=getattr(policy, "temperature", 0.7),
+                    top_p=getattr(policy, "top_p", 1.0),
+                    top_k=getattr(policy, "top_k", 50),
+                    do_sample=True,
+                    seeds=seeds,
+                )
+        else:
+            results = model.generate_batch(
+                prompts,
+                temperature=getattr(policy, "temperature", 0.7),
+                top_p=getattr(policy, "top_p", 1.0),
+                top_k=getattr(policy, "top_k", 50),
+                do_sample=True,
+                seeds=seeds,
+            )
         for res in results:
             total_prompt_tokens += res["prompt_tokens"]
             total_completion_tokens += res["completion_tokens"]
@@ -373,35 +818,64 @@ def run_best_of_n_verifier(
             candidate_texts.append(res["text"])
     else:
         for i in range(n):
-            res = model.generate(
-                prompt,
-                temperature=getattr(policy, "temperature", 0.7),
-                top_p=getattr(policy, "top_p", 1.0),
-                top_k=getattr(policy, "top_k", 50),
-                do_sample=True,
-                seed=seed + i
-            )
+            if profiler:
+                with profiler.track("sampling", use_cuda=True):
+                    res = model.generate(
+                        prompt,
+                        temperature=getattr(policy, "temperature", 0.7),
+                        top_p=getattr(policy, "top_p", 1.0),
+                        top_k=getattr(policy, "top_k", 50),
+                        do_sample=True,
+                        seed=seed + i
+                    )
+            else:
+                res = model.generate(
+                    prompt,
+                    temperature=getattr(policy, "temperature", 0.7),
+                    top_p=getattr(policy, "top_p", 1.0),
+                    top_k=getattr(policy, "top_k", 50),
+                    do_sample=True,
+                    seed=seed + i
+                )
             total_prompt_tokens += res["prompt_tokens"]
             total_completion_tokens += res["completion_tokens"]
             total_time += res["time_s"]
             candidate_texts.append(res["text"])
 
     for text in candidate_texts:
-        candidate_text = extract_candidate_answer(
-            text,
-            answer_type=answer_type,
-            choices=choices,
-            choice_labels=choice_labels,
-        )
-        ans_val = normalize_answer_for_candidates(
-            candidate_text,
-            answer_type=answer_type,
-            choices=choices,
-            choice_labels=choice_labels,
-        )
+        if profiler:
+            with profiler.track("scoring"):
+                candidate_text = extract_candidate_answer(
+                    text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                ans_val = normalize_answer_for_candidates(
+                    candidate_text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+            verifier_prompt = build_verifier_prompt(example["question"], text, candidate_text)
+            with profiler.track("verification", use_cuda=True):
+                score = verifier.score_candidate(verifier_prompt)
+        else:
+            candidate_text = extract_candidate_answer(
+                text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            ans_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            verifier_prompt = build_verifier_prompt(example["question"], text, candidate_text)
+            score = verifier.score_candidate(verifier_prompt)
         candidates.append(ans_val)
-        verifier_prompt = build_verifier_prompt(example["question"], text, candidate_text)
-        score = verifier.score_candidate(verifier_prompt)
         verifier_scores.append(score)
 
     best_idx = int(max(range(len(verifier_scores)), key=lambda i: verifier_scores[i]))
@@ -413,7 +887,11 @@ def run_best_of_n_verifier(
     is_correct = False
     if best_ans_val is not None:
         pred_text = candidate_texts[best_idx] if candidate_texts else ""
-        is_correct = evaluate_prediction(pred_text, best_ans_val, example)
+        if profiler:
+            with profiler.track("scoring"):
+                is_correct = evaluate_prediction(pred_text, best_ans_val, example)
+        else:
+            is_correct = evaluate_prediction(pred_text, best_ans_val, example)
 
     return {
         "example_id": example["id"],
@@ -430,6 +908,7 @@ def run_best_of_n_verifier(
             "verifier_scores": verifier_scores,
             "unique_candidate_frac": unique_frac,
             "num_candidates": len(candidates),
+            "latency": profiler.summary() if profiler else None,
         }
     }
 
@@ -442,6 +921,7 @@ def run_self_consistency_early_stop(
     min_samples: int = 2,
     stop_count: int = None,
     seed: int = 42,
+    profiler: Optional[LatencyProfiler] = None,
 ) -> dict:
     prompt = make_prompt(policy, example['question'])
     answer_type = get_answer_type(example)
@@ -457,30 +937,56 @@ def run_self_consistency_early_stop(
     stop_reason = "max_n"
 
     for i in range(max_n):
-        res = model.generate(
-            prompt,
-            temperature=getattr(policy, 'temperature', 0.7),
-            top_p=getattr(policy, 'top_p', 1.0),
-            top_k=getattr(policy, 'top_k', 50),
-            do_sample=True,
-            seed=seed + i
-        )
+        if profiler:
+            with profiler.track("sampling", use_cuda=True):
+                res = model.generate(
+                    prompt,
+                    temperature=getattr(policy, 'temperature', 0.7),
+                    top_p=getattr(policy, 'top_p', 1.0),
+                    top_k=getattr(policy, 'top_k', 50),
+                    do_sample=True,
+                    seed=seed + i
+                )
+        else:
+            res = model.generate(
+                prompt,
+                temperature=getattr(policy, 'temperature', 0.7),
+                top_p=getattr(policy, 'top_p', 1.0),
+                top_k=getattr(policy, 'top_k', 50),
+                do_sample=True,
+                seed=seed + i
+            )
         total_prompt_tokens += res['prompt_tokens']
         total_completion_tokens += res['completion_tokens']
         total_time += res['time_s']
 
-        candidate_text = extract_candidate_answer(
-            res["text"],
-            answer_type=answer_type,
-            choices=choices,
-            choice_labels=choice_labels,
-        )
-        ans_val = normalize_answer_for_candidates(
-            candidate_text,
-            answer_type=answer_type,
-            choices=choices,
-            choice_labels=choice_labels,
-        )
+        if profiler:
+            with profiler.track("scoring"):
+                candidate_text = extract_candidate_answer(
+                    res["text"],
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                ans_val = normalize_answer_for_candidates(
+                    candidate_text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+        else:
+            candidate_text = extract_candidate_answer(
+                res["text"],
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            ans_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
         candidates.append(ans_val)
         candidate_texts.append(candidate_text)
         if ans_val is not None:
@@ -518,7 +1024,11 @@ def run_self_consistency_early_stop(
                 break
         if pred_text is None and candidate_texts:
             pred_text = candidate_texts[0]
-        is_correct = evaluate_prediction(pred_text or "", top_ans, example)
+        if profiler:
+            with profiler.track("scoring"):
+                is_correct = evaluate_prediction(pred_text or "", top_ans, example)
+        else:
+            is_correct = evaluate_prediction(pred_text or "", top_ans, example)
 
     return {
         "example_id": example['id'],
@@ -540,6 +1050,7 @@ def run_self_consistency_early_stop(
             "stop_ratio": stop_ratio,
             "stop_count": stop_count,
             "min_samples": min_samples,
+            "latency": profiler.summary() if profiler else None,
         }
     }
 
@@ -551,6 +1062,7 @@ def run_best_of_n_early_stop(
     score_threshold: float = 0.7,
     min_samples: int = 1,
     seed: int = 42,
+    profiler: Optional[LatencyProfiler] = None,
 ) -> dict:
     prompt = make_prompt(policy, example['question'])
     answer_type = get_answer_type(example)
@@ -568,37 +1080,70 @@ def run_best_of_n_early_stop(
     stop_reason = "max_n"
 
     for i in range(max_n):
-        res = model.generate(
-            prompt,
-            temperature=getattr(policy, 'temperature', 0.7),
-            top_p=getattr(policy, 'top_p', 1.0),
-            top_k=getattr(policy, 'top_k', 50),
-            do_sample=True,
-            seed=seed + i
-        )
+        if profiler:
+            with profiler.track("sampling", use_cuda=True):
+                res = model.generate(
+                    prompt,
+                    temperature=getattr(policy, 'temperature', 0.7),
+                    top_p=getattr(policy, 'top_p', 1.0),
+                    top_k=getattr(policy, 'top_k', 50),
+                    do_sample=True,
+                    seed=seed + i
+                )
+        else:
+            res = model.generate(
+                prompt,
+                temperature=getattr(policy, 'temperature', 0.7),
+                top_p=getattr(policy, 'top_p', 1.0),
+                top_k=getattr(policy, 'top_k', 50),
+                do_sample=True,
+                seed=seed + i
+            )
         total_prompt_tokens += res['prompt_tokens']
         total_completion_tokens += res['completion_tokens']
         total_time += res['time_s']
 
-        candidate_text = extract_candidate_answer(
-            res["text"],
-            answer_type=answer_type,
-            choices=choices,
-            choice_labels=choice_labels,
-        )
-        sc = score_candidate(
-            res["text"],
-            answer_type=answer_type,
-            example=example,
-            choices=choices,
-            choice_labels=choice_labels,
-        )
-        ans_val = normalize_answer_for_candidates(
-            candidate_text,
-            answer_type=answer_type,
-            choices=choices,
-            choice_labels=choice_labels,
-        )
+        if profiler:
+            with profiler.track("scoring"):
+                candidate_text = extract_candidate_answer(
+                    res["text"],
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                sc = score_candidate(
+                    res["text"],
+                    answer_type=answer_type,
+                    example=example,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+                ans_val = normalize_answer_for_candidates(
+                    candidate_text,
+                    answer_type=answer_type,
+                    choices=choices,
+                    choice_labels=choice_labels,
+                )
+        else:
+            candidate_text = extract_candidate_answer(
+                res["text"],
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            sc = score_candidate(
+                res["text"],
+                answer_type=answer_type,
+                example=example,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
+            ans_val = normalize_answer_for_candidates(
+                candidate_text,
+                answer_type=answer_type,
+                choices=choices,
+                choice_labels=choice_labels,
+            )
         candidates.append(ans_val)
 
         if sc > best_score:
@@ -616,7 +1161,11 @@ def run_best_of_n_early_stop(
     is_correct = False
     if best_ans_val is not None:
         pred_text = best_text or ""
-        is_correct = evaluate_prediction(pred_text, best_ans_val, example)
+        if profiler:
+            with profiler.track("scoring"):
+                is_correct = evaluate_prediction(pred_text, best_ans_val, example)
+        else:
+            is_correct = evaluate_prediction(pred_text, best_ans_val, example)
 
     return {
         "example_id": example['id'],
@@ -637,5 +1186,6 @@ def run_best_of_n_early_stop(
             "stop_reason": stop_reason,
             "score_threshold": score_threshold,
             "min_samples": min_samples,
+            "latency": profiler.summary() if profiler else None,
         }
     }

@@ -1,5 +1,6 @@
 import torch
 import time
+from typing import Optional, Dict
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification, AutoTokenizer, GenerationConfig
 from .utils import setup_logging
 
@@ -164,6 +165,156 @@ class ModelRunner:
             "total_tokens": total_len,
             "time_s": end_time - start_time
         }
+
+    def generate_speculative(
+        self,
+        prompt: str,
+        draft_model: "ModelRunner",
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        top_k: int = 50,
+        do_sample: bool = False,
+        seed: int = None,
+    ) -> dict:
+        """
+        Speculative decoding using a draft model if supported by Transformers.
+        Falls back to standard generation when unsupported.
+        """
+        if self.is_reward_model:
+            raise ValueError("generate_speculative() is not supported for reward/classifier models.")
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        input_len = inputs.input_ids.shape[1]
+        gen_kwargs = {
+            "max_new_tokens": self.max_new_tokens,
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+            gen_kwargs["top_k"] = top_k
+
+        start_time = time.time()
+        fallback = False
+        try:
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    assistant_model=draft_model.model,
+                    **gen_kwargs,
+                )
+        except TypeError:
+            fallback = True
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    **gen_kwargs,
+                )
+        end_time = time.time()
+
+        total_len = outputs.shape[1]
+        completion_tokens = total_len - input_len
+        text = self.tokenizer.decode(outputs[0][input_len:], skip_special_tokens=True)
+        return {
+            "text": text,
+            "prompt_tokens": input_len,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_len,
+            "time_s": end_time - start_time,
+            "speculative_fallback": fallback,
+        }
+
+    def generate_medusa(
+        self,
+        prompt: str,
+        medusa_heads: int = 4,
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        top_k: int = 50,
+        do_sample: bool = False,
+        seed: int = None,
+    ) -> dict:
+        """
+        Medusa decoding if supported by the underlying model implementation.
+        Falls back to standard generation when unsupported.
+        """
+        if self.is_reward_model:
+            raise ValueError("generate_medusa() is not supported for reward/classifier models.")
+        if seed is not None:
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        input_len = inputs.input_ids.shape[1]
+        gen_kwargs = {
+            "max_new_tokens": self.max_new_tokens,
+            "pad_token_id": self.tokenizer.eos_token_id,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+            gen_kwargs["top_k"] = top_k
+
+        start_time = time.time()
+        fallback = False
+        try:
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    medusa_heads=int(medusa_heads),
+                    **gen_kwargs,
+                )
+        except TypeError:
+            fallback = True
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    **gen_kwargs,
+                )
+        end_time = time.time()
+
+        total_len = outputs.shape[1]
+        completion_tokens = total_len - input_len
+        text = self.tokenizer.decode(outputs[0][input_len:], skip_special_tokens=True)
+        return {
+            "text": text,
+            "prompt_tokens": input_len,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_len,
+            "time_s": end_time - start_time,
+            "medusa_fallback": fallback,
+        }
+
+    def get_prompt_context(self, prompt: str, use_hidden_state: bool = False) -> Dict[str, Optional[float]]:
+        """
+        Returns lightweight prompt context features.
+        - prompt_tokens: tokenized prompt length
+        - embedding_norm: L2 norm of pooled last hidden state (optional)
+        """
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        prompt_tokens = int(inputs.input_ids.shape[1])
+        embedding_norm = None
+        if use_hidden_state:
+            inputs = inputs.to(self.device)
+            with torch.no_grad():
+                outputs = self.model(
+                    **inputs,
+                    output_hidden_states=True,
+                    return_dict=True,
+                )
+            hidden_states = getattr(outputs, "hidden_states", None)
+            if hidden_states:
+                last_hidden = hidden_states[-1]
+                pooled = last_hidden.mean(dim=1)
+                embedding_norm = torch.norm(pooled, dim=-1).item()
+        return {"prompt_tokens": prompt_tokens, "embedding_norm": embedding_norm}
 
     def generate_batch(
         self,

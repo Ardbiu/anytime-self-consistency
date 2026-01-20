@@ -201,6 +201,8 @@ def extract_candidate_answer(
 ) -> Optional[str]:
     if answer_type == ANSWER_TYPE_CODE:
         return text
+    if answer_type == ANSWER_TYPE_TEXT:
+        return text
     if answer_type == ANSWER_TYPE_MULTIPLE_CHOICE:
         extracted = extract_multiple_choice_answer(text, choices=choices, choice_labels=choice_labels)
         if extracted is not None:

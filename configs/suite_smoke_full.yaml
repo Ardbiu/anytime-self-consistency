@@ -11,7 +11,7 @@ methods:
   - name: "greedy"
     policy: "direct"
 
-  - name: "greedy"
+  - name: "greedy_cot_long"
     policy: "cot_long"
     max_new_tokens: 1024
 

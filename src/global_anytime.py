@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 
 from .models import ModelRunner
-from .policies import Policy, make_prompt, BwKShadowPricePolicy
+from .policies import Policy, make_prompt, BwKShadowPricePolicy, ContextConfig, bucketize_context
 from .scoring import (
     get_answer_type,
     extract_candidate_answer,
@@ -36,6 +36,18 @@ def _entropy_from_counts(counts: collections.Counter) -> float:
         ent -= p * math.log(p + 1e-12)
     return ent
 
+def _resolve_context_config(context_config: Optional[object]) -> Optional[ContextConfig]:
+    if context_config is None:
+        return None
+    if isinstance(context_config, ContextConfig):
+        return context_config
+    if isinstance(context_config, dict):
+        try:
+            return ContextConfig(**context_config)
+        except TypeError:
+            return None
+    return None
+
 def _majority_vote(candidates: List[Any]) -> Optional[Any]:
     valid = [c for c in candidates if c is not None]
     if not valid:
@@ -60,6 +72,10 @@ def run_global_anytime_sc(
     finalize: str = "majority",
     store_allocation_steps: bool = False,
     seed: int = 42,
+    context_config: Optional[object] = None,
+    context_policy: Optional[Policy] = None,
+    bwk_lambda_init: float = 0.01,
+    bwk_eta: float = 0.01,
 ) -> List[Dict[str, Any]]:
     """
     Global allocation with a single knapsack budget (BwK setting).
@@ -74,6 +90,9 @@ def run_global_anytime_sc(
     if per_example_budget_tokens is not None:
         per_example_budget_tokens = int(per_example_budget_tokens)
 
+    context_cfg = _resolve_context_config(context_config)
+    context_mode = None if context_cfg is None else (context_cfg.mode or "length").lower()
+
     rng = np.random.RandomState(seed)
 
     prompts = []
@@ -82,6 +101,27 @@ def run_global_anytime_sc(
             prompts.append(ex["question"])
         else:
             prompts.append(make_prompt(policy, ex["question"]))
+
+    context_keys = ["default"] * len(examples)
+    context_features = [None] * len(examples)
+    if context_cfg is not None:
+        for idx, ex in enumerate(examples):
+            if context_policy is None:
+                context_prompt = prompts[idx]
+            else:
+                context_prompt = make_prompt(context_policy, ex.get("question", ""))
+            use_hidden_state = context_mode in {"hidden_state", "embedding"}
+            context_info = model.get_prompt_context(context_prompt, use_hidden_state=use_hidden_state)
+            context_keys[idx] = bucketize_context(
+                int(context_info.get("prompt_tokens") or 0),
+                context_info.get("embedding_norm"),
+                context_cfg,
+            )
+            context_features[idx] = {
+                "prompt_tokens": context_info.get("prompt_tokens"),
+                "embedding_norm": context_info.get("embedding_norm"),
+                "context_mode": context_mode,
+            }
 
     states = []
     for _ in examples:
@@ -104,8 +144,26 @@ def run_global_anytime_sc(
     finish_idx = 0
     stop = False
     steps = []
-    bwk_policy = BwKShadowPricePolicy() if allocation_policy == "bwk" else None
+    use_contextual_bwk = allocation_policy in {"contextual_bwk", "bwk_contextual"}
+    bwk_policy = (
+        BwKShadowPricePolicy(lambda_init=bwk_lambda_init, eta=bwk_eta)
+        if allocation_policy == "bwk"
+        else None
+    )
+    bwk_policies = {} if use_contextual_bwk else None
     target_tokens = float(global_budget_tokens) / max(1, len(examples))
+
+    def _get_bwk_policy(ex_idx: int) -> Optional[BwKShadowPricePolicy]:
+        if bwk_policy is not None:
+            return bwk_policy
+        if bwk_policies is None:
+            return None
+        key = context_keys[ex_idx]
+        policy_obj = bwk_policies.get(key)
+        if policy_obj is None:
+            policy_obj = BwKShadowPricePolicy(lambda_init=bwk_lambda_init, eta=bwk_eta)
+            bwk_policies[key] = policy_obj
+        return policy_obj
 
     def sample_once(ex_idx: int, sample_idx: int) -> None:
         nonlocal total_tokens_consumed
@@ -173,8 +231,9 @@ def run_global_anytime_sc(
         state["reward_sum"] += reward
         state["reward_n"] += 1
 
-        if bwk_policy is not None:
-            bwk_policy.update_price(res["total_tokens"], target_tokens)
+        bwk_for_ex = _get_bwk_policy(ex_idx)
+        if bwk_for_ex is not None:
+            bwk_for_ex.update_price(res["total_tokens"], target_tokens)
 
         steps.append({
             "t": len(steps) + 1,
@@ -185,7 +244,8 @@ def run_global_anytime_sc(
             "reward": reward,
             "confidence": after_conf,
             "entropy": after_entropy,
-            "shadow_price": bwk_policy.lambda_price if bwk_policy is not None else None,
+            "shadow_price": bwk_for_ex.lambda_price if bwk_for_ex is not None else None,
+            "context_key": context_keys[ex_idx],
         })
 
     def is_eligible(i: int) -> bool:
@@ -340,13 +400,16 @@ def run_global_anytime_sc(
         return rng.choice(best) if best else -1
 
     def pick_bwk(idx_list: List[int]) -> int:
-        if not idx_list or bwk_policy is None:
+        if not idx_list or (bwk_policy is None and bwk_policies is None):
             return -1
         total_samples = sum(s["n_samples"] for s in states)
         avg_cost = (total_tokens_consumed / total_samples) if total_samples > 0 else target_tokens
         best = []
         best_score = None
         for i in idx_list:
+            bwk_for_ex = _get_bwk_policy(i)
+            if bwk_for_ex is None:
+                continue
             state = states[i]
             counts = state["counts"]
             total = sum(counts.values())
@@ -357,7 +420,7 @@ def run_global_anytime_sc(
                 p_correct = top1 / total
             cost = (state["total_tokens"] / state["n_samples"]) if state["n_samples"] > 0 else avg_cost
             normalized_cost = cost / max(1.0, target_tokens)
-            score = bwk_policy.score(p_correct, normalized_cost)
+            score = bwk_for_ex.score(p_correct, normalized_cost)
             if best_score is None or score > best_score:
                 best_score = score
                 best = [i]
@@ -417,7 +480,7 @@ def run_global_anytime_sc(
             pick = pick_voc(eligible)
         elif allocation_policy == "ucb":
             pick = pick_ucb(eligible, len(steps) + 1)
-        elif allocation_policy == "bwk":
+        elif allocation_policy in {"bwk", "contextual_bwk", "bwk_contextual"}:
             pick = pick_bwk(eligible)
         else:
             pick = pick_uniform(eligible)
@@ -448,6 +511,10 @@ def run_global_anytime_sc(
         alloc_summary["per_example_budget_tokens"] = per_example_budget_tokens or int(global_budget_tokens / max(1, len(examples)))
     if bwk_policy is not None:
         alloc_summary["shadow_price_final"] = bwk_policy.lambda_price
+    if bwk_policies:
+        alloc_summary["shadow_price_by_context"] = {
+            key: policy.lambda_price for key, policy in bwk_policies.items()
+        }
 
     for ex_idx, ex in enumerate(examples):
         state = states[ex_idx]
@@ -514,6 +581,7 @@ def run_global_anytime_sc(
             "init_k": init_k,
             "max_samples_per_item": max_samples,
             "global_tokens_used": total_tokens_consumed,
+            "context_key": context_keys[ex_idx],
             "extra": {
                 "candidates": candidates,
                 "candidate_scores": state["candidate_scores"],
@@ -525,6 +593,7 @@ def run_global_anytime_sc(
                 "entropy": ent,
                 "finalize": finalize,
                 "allocation_summary": alloc_summary,
+                "context_features": context_features[ex_idx],
             }
         })
 
