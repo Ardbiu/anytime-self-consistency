@@ -106,14 +106,21 @@ def _format_multiple_choice_question(question: str, choices: List[str], labels: 
 def _infer_function_name_from_code(code: str) -> Optional[str]:
     if not isinstance(code, str):
         return None
-    match = re.search(r"def\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(", code)
+    # Use a standard regex and guard against malformed patterns in older envs.
+    try:
+        match = re.search(r"def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", code)
+    except re.error:
+        return None
     if match:
         return match.group(1)
     return None
 
 def _infer_function_name_from_tests(test_list: List[str]) -> Optional[str]:
     for test in test_list or []:
-        match = re.search(r"assert\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(", str(test))
+        try:
+            match = re.search(r"assert\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", str(test))
+        except re.error:
+            continue
         if match:
             return match.group(1)
     return None
