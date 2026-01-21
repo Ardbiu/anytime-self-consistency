@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH -p mit_normal_gpu
+#SBATCH -p mit_preemptable
 #SBATCH --gres=gpu:h200:1
 #SBATCH --time=05:00:00
 #SBATCH --mem=120G

@@ -8,7 +8,8 @@ TIME_LIMIT="${TIME_LIMIT:-05:00:00}"
 MEMORY="${MEMORY:-120G}"
 DEFAULT_GRES="gpu:h200:1"
 
-DEFAULT_PARTITIONS=("mit_normal_gpu" "mit_preemptable" "mit_preemptable" "mit_preemptable")
+# Default to 3 preemptable slots to leave a buffer for resubmission.
+DEFAULT_PARTITIONS=("mit_preemptable" "mit_preemptable" "mit_preemptable")
 
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
   mkdir -p logs outputs
@@ -43,7 +44,9 @@ if [[ -n "${SLURM_JOB_ID:-}" ]]; then
   }
 
   trap 'resubmit; exit 0' TERM INT
+  trap 'resubmit' EXIT
 
+  set +e
   python -m src.run_eval \
     --config "$CONFIG" \
     --run_group "$RUN_GROUP" \
@@ -51,8 +54,12 @@ if [[ -n "${SLURM_JOB_ID:-}" ]]; then
     --num_shards "$NUM_SHARDS" \
     --resume \
     --save_interval 10
+  status=$?
+  set -e
 
-  resubmit
+  if [[ "$status" -ne 0 ]]; then
+    echo "[!] run_eval exited with status $status; resubmitting shard ${SHARD_ID}."
+  fi
   exit 0
 fi
 
