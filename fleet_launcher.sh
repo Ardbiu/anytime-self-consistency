@@ -10,6 +10,8 @@ DEFAULT_GRES="gpu:h200:1"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${LOG_DIR:-${ROOT_DIR}/logs}"
 OUT_DIR="${OUT_DIR:-${ROOT_DIR}/outputs}"
+RESUBMIT_RETRIES="${RESUBMIT_RETRIES:-30}"
+RESUBMIT_DELAY="${RESUBMIT_DELAY:-30}"
 
 # Default to 3 preemptable slots to leave a buffer for resubmission.
 DEFAULT_PARTITIONS=("mit_preemptable" "mit_preemptable" "mit_preemptable")
@@ -32,10 +34,33 @@ if [[ -n "${SLURM_JOB_ID:-}" ]]; then
   resubmit() {
     if [[ "$resubmitted" -eq 0 && ! -f "$STOP_FILE" ]]; then
       resubmitted=1
-      sbatch -p "$PARTITION" --gres="$GRES" --time="$TIME_LIMIT" --mem="$MEMORY" \
-        --chdir="$ROOT_DIR" --output="${LOG_DIR}/%j.out" --error="${LOG_DIR}/%j.err" \
-        --export=ALL,CONFIG="$CONFIG",RUN_GROUP_BASE="$RUN_GROUP_BASE",NUM_SHARDS="$NUM_SHARDS",SHARD_ID="$SHARD_ID",STOP_FILE="$STOP_FILE",PARTITION="$PARTITION",GRES="$GRES",TIME_LIMIT="$TIME_LIMIT",MEMORY="$MEMORY",LOG_DIR="$LOG_DIR",OUT_DIR="$OUT_DIR" \
-        "$0"
+      attempt=1
+      while :; do
+        set +e
+        out=$(sbatch -p "$PARTITION" --gres="$GRES" --time="$TIME_LIMIT" --mem="$MEMORY" \
+          --chdir="$ROOT_DIR" --output="${LOG_DIR}/%j.out" --error="${LOG_DIR}/%j.err" \
+          --export=ALL,CONFIG="$CONFIG",RUN_GROUP_BASE="$RUN_GROUP_BASE",NUM_SHARDS="$NUM_SHARDS",SHARD_ID="$SHARD_ID",STOP_FILE="$STOP_FILE",PARTITION="$PARTITION",GRES="$GRES",TIME_LIMIT="$TIME_LIMIT",MEMORY="$MEMORY",LOG_DIR="$LOG_DIR",OUT_DIR="$OUT_DIR",RESUBMIT_RETRIES="$RESUBMIT_RETRIES",RESUBMIT_DELAY="$RESUBMIT_DELAY" \
+          "$0")
+        status=$?
+        set -e
+
+        if [[ "$status" -eq 0 ]]; then
+          echo "[*] Resubmitted shard ${SHARD_ID}: ${out}"
+          break
+        fi
+
+        echo "[!] Resubmit failed for shard ${SHARD_ID} (attempt ${attempt}/${RESUBMIT_RETRIES}): ${out}"
+        if [[ -f "$STOP_FILE" ]]; then
+          echo "[*] Stop file detected. Aborting resubmit retries."
+          break
+        fi
+        if [[ "$attempt" -ge "$RESUBMIT_RETRIES" ]]; then
+          echo "[!] Giving up resubmit after ${RESUBMIT_RETRIES} attempts."
+          break
+        fi
+        attempt=$((attempt + 1))
+        sleep "$RESUBMIT_DELAY"
+      done
     fi
   }
 
